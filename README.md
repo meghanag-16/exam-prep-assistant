@@ -1,4 +1,4 @@
-# examprep
+# Exam preparation assistant
 
 Exam-prep assistant over your own course material. It processes every page of your PDFs, PPTs and TXT files (including OCR of images), gives marks-based answers with page citations, adds extra explanations only from trusted sites, and covers notes, MCQs, formula tables and past-paper analysis.
 
