@@ -1,0 +1,18 @@
+# Marks-based answer templates. Edit to match your university's pattern.
+marks:
+  2:
+    word_budget: [40, 70]
+    structure: [definition, 2-3 key points]
+  5:
+    word_budget: [150, 250]
+    structure: [short intro, 4-6 points, example]
+  10:
+    word_budget: [400, 600]
+    structure: [intro, detailed points, diagram description, example, advantages and disadvantages, conclusion]
+  16:
+    word_budget: [700, 1000]
+    structure: [intro, detailed points with subheadings, diagram description, worked example, advantages and disadvantages, comparison table if relevant, conclusion]
+
+practice_paper:
+  part_a: {questions: 10, marks_each: 2}
+  part_b: {questions: 5, marks_each: 16, internal_choice: true}

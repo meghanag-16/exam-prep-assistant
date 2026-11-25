@@ -1,0 +1,37 @@
+# LLM providers, tried in this order. All are free tiers.
+# Model names and free limits change often: run `uv run examprep-check`
+# to confirm each configured model is actually listed by the provider.
+llm:
+  order: [gemini, groq, openrouter]
+  providers:
+    gemini:
+      base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+      api_key_env: GEMINI_API_KEY
+      model: gemini-2.5-flash
+      vision: true
+    groq:
+      base_url: https://api.groq.com/openai/v1/
+      api_key_env: GROQ_API_KEY
+      model: openai/gpt-oss-120b
+      vision: false
+    openrouter:
+      base_url: https://openrouter.ai/api/v1/
+      api_key_env: OPENROUTER_API_KEY
+      model: google/gemma-4-31b-it:free
+      vision: false
+  timeout_seconds: 60
+  max_retries: 2
+
+embeddings:
+  model: BAAI/bge-small-en-v1.5
+  batch_size: 64
+
+reranker:
+  model: BAAI/bge-reranker-base
+  # lighter, faster CPU alternative:
+  # model: cross-encoder/ms-marco-MiniLM-L-6-v2
+
+trusted_search:
+  provider: tavily
+  api_key_env: TAVILY_API_KEY
+  max_results: 5

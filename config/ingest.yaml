@@ -1,0 +1,25 @@
+# Settings for reading course files.
+accepted_extensions: [.pdf, .pptx, .ppt, .txt, .zip]
+max_file_mb: 200                # bigger single files are rejected
+max_zip_uncompressed_mb: 1000   # total unpacked size allowed per zip (zip-bomb guard)
+max_zip_depth: 2                # zips inside zips are opened up to this depth
+
+pdf:
+  extract_tables: true          # PyMuPDF table detection, stored as Markdown
+
+txt:
+  section_chars: 2500           # a .txt file is split into "pages" of about this size
+
+ocr:
+  min_text_chars_for_text_layer: 40   # below this a page is treated as scanned
+  min_image_px: 120                   # skip images smaller than this (logos, icons)
+  dpi: 300
+  lang: eng                           # Tesseract language(s), e.g. eng or eng+hin
+  timeout_seconds: 120                # per image / page
+  workers: 0                          # 0 = use all CPU cores
+
+formula:
+  # A page is flagged as a formula candidate (for formula extraction) when it has at
+  # least this many math symbols, or this share of its characters are math symbols.
+  min_math_symbols: 6
+  min_math_ratio: 0.02

@@ -1,0 +1,20 @@
+# Only these domains are ever used for "Beyond your slides" content.
+# `default` applies to every subject; add subject-specific lists below.
+# Check each site's terms of service before going live.
+default:
+  - geeksforgeeks.org
+  - tutorialspoint.com
+  - javatpoint.com
+  - programiz.com
+  - nptel.ac.in
+  - ocw.mit.edu
+
+subjects:
+  # operating_systems:
+  #   - os-book.com
+  # dbms:
+  #   - postgresql.org
+  # python:
+  #   - docs.python.org
+
+relevance_threshold: 0.5   # tuned during evaluation
