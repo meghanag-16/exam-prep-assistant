@@ -1,13 +1,13 @@
 # Exam preparation assistant
 
-An exam-preparation tool that works from your own course material. It reads every page of your slides and notes (including text inside images), records each page so nothing is silently skipped, and organises the material into decks and topics even when files have meaningless names like `unit_3.pdf` or `1.pptx`.
+An exam-preparation tool that works from your own course material. It reads every page of your slides and notes (including text inside images), records each page so nothing is silently skipped, and organises the material into decks and topics 
 
 ## What it does
 
 - **Reads every page.** Each page, slide or text section gets its own record in a page ledger, with a coverage report that names any page where no text could be found.
 - **Reads text in images.** Scanned pages and images inside PDFs and slides are read with OCR. Repeated images such as logos are read only once.
 - **Handles messy uploads.** Any mix of files and zips in one go. Files are identified by their content, not their extension, and duplicates are skipped.
-- **Finds the structure.** Splits a combined 200 to 300 page PDF back into its original decks, groups pages into topics with page ranges, and names each topic. Works on slides and notes from any college without per-template settings: headings are found from font size, bold text, numbering (1.2, 2.3.1) and slide titles; chapters or units become topics; repeated lines such as the course name, instructor, college and page headers are ignored; cover, contents and closing pages never become topics.
+- **Finds the structure.** Splits a combined 200 to 300 page PDF back into its original decks, groups pages into topics with page ranges, and names each topic. Works on slides and notes from any college without per-template settings: headings are found from font size, bold text, numbering and slide titles; chapters or units become topics; repeated lines such as the course name, instructor, college and page headers are ignored; cover, contents and closing pages never become topics.
 - **Checks the syllabus.** Given a syllabus file, it lists which syllabus points are covered by the slides and which are not.
 - **Incremental.** Files already processed are never processed again; adding one new file only processes that file.
 
