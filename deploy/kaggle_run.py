@@ -19,6 +19,8 @@ import subprocess
 import sys
 
 SUBJECT = os.environ.get("EXAMPREP_SUBJECT", "my_subject")  # CHANGE THIS per subject, e.g. "operating_systems"
+# True re-reads files that were already ingested (for example to redo OCR after an update).
+FORCE = os.environ.get("EXAMPREP_FORCE", "").lower() in {"1", "true", "yes"}
 CODE_REPO_URL = "https://github.com/meghanag-16/exam-prep-assistant"
 SECRETS = ["GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "TAVILY_API_KEY", "HF_TOKEN", "HF_DATASET_REPO"]
 WORK = "/kaggle/working"
@@ -112,7 +114,8 @@ def main() -> None:
         # Downloads the existing ledger from Hugging Face first, skips files already
         # done, OCRs on all CPU cores, then uploads the updated ledger.
         files = " ".join(f'"{p}"' for p in inputs)
-        sh(f"examprep-ingest --subject {SUBJECT} --exclude '*syllabus*' --push {files}")
+        force = " --force" if FORCE else ""
+        sh(f"examprep-ingest --subject {SUBJECT} --exclude '*syllabus*' --push{force} {files}")
     else:
         print("No course-file dataset attached; using the ledger already on Hugging Face.")
     syllabus = find_syllabus(inputs)
