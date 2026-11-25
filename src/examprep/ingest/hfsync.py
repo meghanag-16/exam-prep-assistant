@@ -1,6 +1,6 @@
 """Sync a subject's ledger with the Hugging Face dataset repo.
 
-Layout in the dataset repo:  subjects/<subject>/ledger.sqlite  and  report.json
+Layout in the dataset repo:  subjects/<subject>/ledger.sqlite plus the JSON/YAML reports
 
 - pull: download the ledger before ingesting, so a fresh Kaggle session knows
   what was already processed and skips it.
@@ -60,7 +60,7 @@ def pull(subject: str) -> bool:
 
 
 def push(subject: str, message: str | None = None) -> str:
-    """Upload ledger.sqlite and report.json for the subject. Returns the repo path."""
+    """Upload the subject's ledger and reports. Returns the repo path."""
     from huggingface_hub import HfApi
 
     repo, token = _repo_and_token()
@@ -70,7 +70,7 @@ def push(subject: str, message: str | None = None) -> str:
         repo_type="dataset",
         folder_path=str(folder),
         path_in_repo=remote_dir(subject),
-        allow_patterns=["ledger.sqlite", "report.json"],
+        allow_patterns=["ledger.sqlite", "report.json", "topics.yaml", "topics_report.json", "syllabus_report.json"],
         commit_message=message or f"ingest {ledger.safe_subject(subject)}",
     )
     return f"{repo}/{remote_dir(subject)}"

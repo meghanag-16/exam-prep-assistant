@@ -1,86 +1,94 @@
 # Exam preparation assistant
 
-Exam-prep assistant over your own course material. It processes every page of your PDFs, PPTs and TXT files (including OCR of images), gives marks-based answers with page citations, adds extra explanations only from trusted sites, and covers notes, MCQs, formula tables and past-paper analysis.
+An exam-preparation tool that works from your own course material. It reads every page of your slides and notes (including text inside images), records each page so nothing is silently skipped, and organises the material into decks and topics even when files have meaningless names like `unit_3.pdf` or `1.pptx`.
 
-Status: ingestion and page ledger are working. Topics, formulas, search, answering and the study tools are being added.
+## What it does
 
-## Layout
+- **Reads every page.** Each page, slide or text section gets its own record in a page ledger, with a coverage report that names any page where no text could be found.
+- **Reads text in images.** Scanned pages and images inside PDFs and slides are read with OCR. Repeated images such as logos are read only once.
+- **Handles messy uploads.** Any mix of files and zips in one go. Files are identified by their content, not their extension, and duplicates are skipped.
+- **Finds the structure.** Splits a combined 200 to 300 page PDF back into its original decks, groups pages into topics with page ranges, and names each topic.
+- **Checks the syllabus.** Given a syllabus file, it lists which syllabus points are covered by the slides and which are not.
+- **Incremental.** Files already processed are never processed again; adding one new file only processes that file.
 
-    config/            YAML settings (models, exam pattern, trusted sites, ingestion)
-    src/examprep/      Python package
-      config.py        settings loader (secrets from env, the rest from config/)
-      check.py         setup check: `uv run examprep-check`
-      cli.py           `examprep-ingest` and `examprep-report` commands
-      ingest/
-        sources.py     finds files in folders/zips, checks real type, removes duplicates
-        parsers.py     PDF (PyMuPDF), PPTX (python-pptx), TXT readers
-        convert.py     old .ppt -> .pptx
-        ocr.py         Tesseract OCR in parallel (scanned pages and unique images)
-        ledger.py      SQLite page ledger, one row per page/slide/section
-        pipeline.py    runs everything and builds the coverage report
-        hfsync.py      download/upload the ledger to the Hugging Face dataset repo
-      api/             FastAPI backend
-      ui/              Streamlit frontend
-    deploy/kaggle_run.py   Kaggle launcher script (sets up the machine, calls the CLI)
-    tests/             pytest tests
-    Dockerfile, start.sh   Hugging Face Docker Space image
+## What it supports
 
-## Where things run
+| | |
+|---|---|
+| Course files | `.pdf`, `.pptx`, `.ppt`, `.txt`, `.zip` (including zips inside zips), and whole folders |
+| From slides | slide titles, body text, tables, speaker notes, images |
+| From PDFs | text with font sizes, tables, images, scanned pages |
+| Syllabus | `.txt`, `.pdf` or `.pptx` |
+| LLM providers | Gemini, Groq, OpenRouter (free tiers, tried in that order) |
+| Storage | SQLite page ledger per subject, synced to a Hugging Face dataset repo |
+| Interfaces | command line, Streamlit app, FastAPI |
 
-- Laptop: only editing code and running the light setup check. No OCR, no ML models.
-- Kaggle: heavy ingestion (OCR, embeddings, formula extraction) on the free GPU, by running deploy/kaggle_run.py, which only calls the same CLI you run locally. No notebooks in the repo.
-- Hugging Face Space: the hosted app everyone uses (FastAPI + Streamlit).
-- Hugging Face Dataset repo: permanent storage the Space and Kaggle share.
+## Folder structure
 
-## Keeping everything inside the project folder
+    config/
+      models.yaml          LLM providers, embedding model
+      ingest.yaml          file limits, OCR settings
+      structure.yaml       duplicate, deck and topic detection settings
+      exam_pattern.yaml    marks-based answer templates
+      trusted_sites.yaml   sites allowed for extra explanations
+    src/examprep/
+      cli.py               command-line entry points
+      check.py             setup check
+      config.py            settings loader
+      llm.py               LLM client with provider fallback
+      ingest/              reading files: sources, parsers, OCR, page ledger, sync
+      structure/           decks, topics, duplicates, syllabus mapping
+      api/                 FastAPI backend
+      ui/                  Streamlit app
+    deploy/kaggle_run.py   launcher script for Kaggle
+    tests/                 pytest tests
+    .streamlit/            app security and privacy settings
+    Dockerfile, start.sh   Hugging Face Space image
 
-`uv sync` installs packages only into `.venv` in this folder. uv also keeps a download cache and its own Python copy in your user folder by default. To keep those inside the project too, run this once in Command Prompt before `uv sync` (it applies to new terminals):
+Data is written to `data/<subject>/` (not committed).
 
-    setx UV_CACHE_DIR "%CD%\.uv-cache"
-    setx UV_PYTHON_INSTALL_DIR "%CD%\.uv-python"
+## How to run
 
-Then open a new terminal, `uv cache clean`, and `uv sync` again. Deleting the project folder removes everything.
+Requirements: Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 
-## Local setup (Windows, uv)
+**1. Set up**
 
     uv sync
-    copy .env.example .env      (then fill in your keys)
+    copy .env.example .env        (Windows; cp on macOS/Linux. Then fill in your keys.)
     uv run examprep-check
-    uv run pytest
 
-Run the app locally:
+**2. Add course files for a subject**
 
-    uv run uvicorn examprep.api.main:app --port 8000
-    uv run streamlit run src/examprep/ui/app.py
-
-## Ingesting course files
-
-    uv run examprep-ingest "path\to\folder_or_files_or_zips" --subject operating_systems
+    uv run examprep-ingest "path\to\files_or_folder_or_zip" --subject operating_systems
     uv run examprep-report --subject operating_systems
 
-- Accepts any mix of .zip, .pdf, .pptx, .ppt and .txt, and folders (searched recursively).
-- Every page, slide or text section gets a row in data/<subject>/ledger.sqlite.
-- Files already ingested are skipped (matched by content hash, not name).
-- Without Tesseract (the laptop), scanned pages and images are marked `needs_ocr`.
-  Running again on Kaggle with the same files fills them in.
-- `--push` uploads the ledger to the dataset repo (subjects/<subject>/). On a fresh
-  machine with no local ledger, it downloads the existing one first.
-- `--no-ocr` skips OCR, `--force` re-reads files already done, `--pull` replaces the
-  local ledger with the remote one.
+Options: `--push` uploads the ledger to the Hugging Face dataset repo, `--exclude "*syllabus*"` skips matching files, `--no-ocr`, `--force`.
 
-The app's Upload tab and the API (`POST /ingest`, `GET /coverage/{subject}`) run the same pipeline.
+**3. Build the topic map**
 
-## Old .ppt files
+    uv run examprep-topics --subject operating_systems --syllabus path\to\syllabus.pdf
 
-Conversion to .pptx is tried in this order:
-1. LibreOffice, if installed. It is installed automatically in the Hugging Face Space and in the Kaggle notebook.
-2. Your Microsoft PowerPoint on Windows, after `uv sync --extra windows-ppt`.
-3. Otherwise the file is rejected with a message to re-save it as .pptx in PowerPoint.
+To rename topics, edit `data/<subject>/topics.yaml` and run `uv run examprep-topics --subject operating_systems --apply-edits`. `--pull` and `--push` sync with the dataset repo.
 
-## Secrets
+**4. Run the app**
 
-Keys live only in `.env` locally, in Kaggle Secrets on Kaggle, and in Space secrets on Hugging Face. `.env` is in `.gitignore`. Never put keys in code or config files.
+    uv run streamlit run src/examprep/ui/app.py
+    uv run uvicorn examprep.api.main:app --port 8000
 
-## Model names
+**Large uploads on Kaggle (free).** Create a Kaggle notebook, paste `deploy/kaggle_run.py`, set `SUBJECT`, attach a private dataset with the course files, add the keys from `.env.example` as Kaggle Secrets and run. It installs the OCR tools, ingests the files, builds the topic map and uploads everything to the dataset repo.
 
-Free model names and limits change. `examprep-check` lists each provider's models and warns if a configured name in `config/models.yaml` is not available.
+**Checks**
+
+    uv run pytest
+    uv run ruff check .
+    uv run ruff format --check .
+
+## Limitations
+
+- Search, marks-based answers, notes, MCQs and past-paper analysis are not available yet.
+- OCR reads printed text well, but handwriting, diagrams and equations poorly.
+- Without Tesseract installed (for example on a laptop), scanned pages and images are marked "needs OCR" until processed on Kaggle or the hosted app.
+- Old `.ppt` files need LibreOffice or Microsoft PowerPoint to convert; otherwise re-save them as `.pptx`.
+- Deck and topic detection are heuristic and should be checked by hand; topic names can be edited.
+- Without the embedding model (the `ml` extra), a simpler similarity method is used, which is less accurate.
+- Free LLM tiers have rate limits that providers change without notice, and free providers may use submitted content. Upload only material you are allowed to share.

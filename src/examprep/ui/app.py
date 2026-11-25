@@ -1,4 +1,4 @@
-"""Streamlit frontend: upload course files and see page coverage.
+"""Streamlit frontend: upload course files, see page coverage and the topic map.
 Search, answers and study tools are added as they are built."""
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from examprep.ingest import hfsync, ledger, ocr, pipeline
 st.set_page_config(page_title="Exam Prep", layout="wide")
 st.title("Exam Prep Assistant")
 
-upload_tab, coverage_tab, setup_tab = st.tabs(["Upload", "Coverage", "Setup"])
+upload_tab, coverage_tab, topics_tab, setup_tab = st.tabs(["Upload", "Coverage", "Topics", "Setup"])
 
 with upload_tab:
     st.caption(
@@ -24,9 +24,7 @@ with upload_tab:
         "Very large first uploads are faster on Kaggle (see README)."
     )
     subject = st.text_input("Subject", placeholder="e.g. operating_systems")
-    files = st.file_uploader(
-        "Course files", type=["zip", "pdf", "pptx", "ppt", "txt"], accept_multiple_files=True
-    )
+    files = st.file_uploader("Course files", type=["zip", "pdf", "pptx", "ppt", "txt"], accept_multiple_files=True)
     push = st.checkbox("Save to the Hugging Face dataset repo afterwards", value=True)
     if not ocr.tesseract_available():
         st.info("Tesseract is not installed here, so scanned pages and images will be marked 'needs OCR'.")
@@ -77,6 +75,53 @@ with coverage_tab:
         st.dataframe(cov["files"], width="stretch")
         if cov["empty_pages"]:
             st.write("Pages with no text: " + ", ".join(cov["empty_pages"]))
+
+with topics_tab:
+    from examprep.structure import build, store
+
+    subjects = sorted(p.name for p in config.data_dir().iterdir() if (p / "ledger.sqlite").exists())
+    if not subjects:
+        st.write("No subjects ingested yet.")
+    else:
+        chosen = st.selectbox("Subject", subjects, key="topics_subject")
+        if st.button("Build or rebuild topic map"):
+            with st.spinner("Finding decks and topics ..."):
+                rep = build.build(chosen, log=lambda _m: None)
+            st.success(f"{len(rep['topics'])} topics in {len(rep['decks'])} deck(s)")
+        rows = build.topic_map(chosen)
+        if rows:
+            st.caption("Rename a topic by editing its name, then press Save names.")
+            table = [
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "file": r["file"],
+                    "pages": f"{r['start_page']}-{r['end_page']}",
+                    "slide headings": r["sections"] or "",
+                }
+                for r in rows
+            ]
+            edited = st.data_editor(
+                table, disabled=["id", "file", "pages", "slide headings"], hide_index=True, width="stretch"
+            )
+            if st.button("Save names"):
+                changed = 0
+                for before, after in zip(table, edited, strict=True):
+                    if after["name"].strip() and after["name"] != before["name"]:
+                        build.rename_topic(chosen, int(before["id"]), after["name"])
+                        changed += 1
+                st.success(f"{changed} name(s) saved.")
+            con = ledger.connect(chosen)
+            try:
+                store.migrate(con)
+                points = con.execute("SELECT unit, text, covered FROM syllabus_points ORDER BY id").fetchall()
+            finally:
+                con.close()
+            if points:
+                missing = [p for p in points if not p["covered"]]
+                st.subheader(f"Syllabus: {len(points) - len(missing)} of {len(points)} points found in the slides")
+                for p in missing:
+                    st.write(f"Not found: {(p['unit'] + ': ') if p['unit'] else ''}{p['text']}")
 
 with setup_tab:
     st.subheader("API keys")

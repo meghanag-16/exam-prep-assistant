@@ -1,0 +1,16 @@
+# Streamlit settings for local runs and the Hugging Face Space.
+
+[browser]
+# Do not send anonymous usage statistics to Streamlit.
+gatherUsageStats = false
+
+[server]
+# Protects uploads against cross-site request forgery (uses one technical cookie).
+enableXsrfProtection = true
+# Largest single upload, in MB (matches max_file_mb in config/ingest.yaml).
+maxUploadSize = 200
+
+[client]
+# Hide Python error details from visitors; errors still appear in the server logs.
+showErrorDetails = false
+toolbarMode = "minimal"

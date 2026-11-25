@@ -10,6 +10,7 @@ flat list of course files, each identified by its real content type and hash.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import shutil
 import zipfile
@@ -140,7 +141,7 @@ def _extract_zip(zpath: Path, dest: Path, label: str, out: Collected, budget: li
     return extracted
 
 
-def collect(inputs: list[Path], work_dir: Path) -> Collected:
+def collect(inputs: list[Path], work_dir: Path, exclude: list[str] | tuple[str, ...] = ()) -> Collected:
     """Expand inputs into unique course files. Zips are unpacked under work_dir."""
     cfg = config.ingest()
     max_file = int(cfg["max_file_mb"]) * 1024 * 1024
@@ -151,7 +152,12 @@ def collect(inputs: list[Path], work_dir: Path) -> Collected:
 
     accepted = {e.lower() for e in cfg["accepted_extensions"]}
 
+    patterns = [x.lower() for x in exclude]
+
     def wanted(path: Path, label: str) -> bool:
+        if any(fnmatch.fnmatch(path.name.lower(), pat) for pat in patterns):
+            out.skipped.append(Skipped(label, "excluded by --exclude"))
+            return False
         # Files found inside folders and zips must have a supported extension
         # (so code, images and Word files are not read as text). Files named
         # directly by the user are always checked by content.

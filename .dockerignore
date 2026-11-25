@@ -4,3 +4,6 @@ data
 __pycache__
 .pytest_cache
 deploy/kaggle_run.py
+.git
+.github
+.ruff_cache

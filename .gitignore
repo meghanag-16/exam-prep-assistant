@@ -13,3 +13,4 @@ data/
 *.ipynb
 # project spec (kept local)
 exam_prep.txt
+.ruff_cache/

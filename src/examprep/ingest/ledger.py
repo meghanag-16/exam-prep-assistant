@@ -197,9 +197,7 @@ def refresh_page_status(con: sqlite3.Connection, ocr_available: bool = True) -> 
 def coverage(con: sqlite3.Connection) -> dict:
     """Summary used by the CLI report, the API and the UI."""
     files = [dict(r) for r in con.execute("SELECT id, name, kind, pages, status, error, note FROM files ORDER BY name")]
-    counts = {
-        r["status"]: r["n"] for r in con.execute("SELECT status, COUNT(*) AS n FROM pages GROUP BY status")
-    }
+    counts = {r["status"]: r["n"] for r in con.execute("SELECT status, COUNT(*) AS n FROM pages GROUP BY status")}
     empty = [
         f"{r['name']} p.{r['page_no']}"
         for r in con.execute(

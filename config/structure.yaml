@@ -1,0 +1,49 @@
+# Settings for building the topic map from the page ledger.
+
+embeddings:
+  # auto: use sentence-transformers (model from models.yaml) when it is installed
+  # (Kaggle and the Space), otherwise a lightweight TF-IDF method (laptop).
+  backend: auto            # auto | sentence-transformers | tfidf
+
+duplicates:
+  shingle_words: 5         # compare pages as overlapping 5-word sequences
+  min_words: 8             # pages shorter than this are never marked duplicate
+  similarity: 0.9          # Jaccard similarity for "same slide"
+  containment: 0.9         # share of a page's text found inside another page ("same slide plus one bullet")
+
+boundaries:
+  # A new deck starts inside a combined PDF when the evidence score reaches the threshold.
+  threshold: 1.0
+  weights:
+    title_slide: 0.6       # few lines, large font
+    number_restart: 0.8    # printed slide number goes back to 1 or drops
+    template_change: 0.5   # repeated header/footer lines change
+    topic_shift: 0.4       # text of neighbouring pages suddenly unrelated
+  min_deck_pages: 3        # decks shorter than this are merged into the previous one
+  title_max_lines: 6
+  topic_shift_similarity: 0.15
+
+sections:
+  # Lines repeated across decks (course name, instructor, department, college) are
+  # ignored when finding headings and topics. The ledger still keeps them.
+  repeated_in_decks: 0.5      # in at least this share of decks (needs 3+ decks)
+  repeated_on_pages: 0.9      # or on this share of pages of one deck ...
+  single_deck_min_pages: 8    # ... when the deck has at least this many pages
+  filler_max_words: 6         # cover / closing slides with fewer words and no heading
+  use_headings_share: 0.5     # use slide headings for topics when this share of pages has one
+  notes_words_per_page: 170   # PDFs with more words per page are read as notes: chapters and numbered
+                              # headings (1.1, 1.2, 2.1 ...) set the topics, and bold lines are points
+
+topics:
+  target_pages_per_topic: 8   # used only when slides have no usable headings
+  min_pages: 3                # smaller sections are merged with their most similar neighbour
+  max_pages: 25
+
+naming:
+  use_llm: true            # falls back to headings/keywords when no LLM is reachable
+  batch_size: 12           # topics named per LLM request (saves free-tier quota)
+
+syllabus:
+  # Minimum similarity for a syllabus point to count as covered by a topic.
+  match_threshold_embeddings: 0.45
+  match_threshold_tfidf: 0.15

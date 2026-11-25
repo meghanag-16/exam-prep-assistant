@@ -210,7 +210,9 @@ def parse_pptx(path: Path) -> list[PageData]:
 
 # ---------------------------------------------------------------- TXT
 
-HEADING = re.compile(r"^(#{1,6}\s+\S.*|(unit|chapter|module|topic|section)\s+[\w.]+.*|[A-Z][A-Z0-9 ,:&()/-]{3,80})$", re.I)
+HEADING = re.compile(
+    r"^(#{1,6}\s+\S.*|(unit|chapter|module|topic|section)\s+[\w.]+.*|[A-Z][A-Z0-9 ,:&()/-]{3,80})$", re.I
+)
 
 
 def read_text(path: Path) -> str:

@@ -53,6 +53,11 @@ def ingest() -> dict[str, Any]:
     return _load_yaml("ingest.yaml")
 
 
+@lru_cache
+def structure() -> dict[str, Any]:
+    return _load_yaml("structure.yaml")
+
+
 def secret(name: str) -> str | None:
     """Return a secret from the environment, or None if unset/blank."""
     value = os.getenv(name, "").strip()

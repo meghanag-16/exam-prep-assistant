@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from examprep import config
-from examprep.ingest.convert import PptConversionError, available_converter, ppt_to_pptx
+from examprep.ingest.convert import PptConversionError, ppt_to_pptx
 
 
 def test_yaml_configs_load():

@@ -1,8 +1,10 @@
 """Command-line entry points. Everything the Kaggle launcher or the app does goes
 through these, so the same code runs locally, on Kaggle and on the Space.
 
-  examprep-ingest <files/folders/zips> --subject <name> [--push] [--pull] [--no-ocr] [--force]
+  examprep-ingest <files/folders/zips> --subject <name> [--push] [--pull] [--no-ocr] [--force] [--exclude PATTERN]
   examprep-report --subject <name>
+  examprep-topics --subject <name> [--syllabus FILE] [--push] [--pull] [--apply-edits] [--export]
+                  [--check-boundaries FILE]
 """
 
 from __future__ import annotations
@@ -13,6 +15,21 @@ import sys
 from pathlib import Path
 
 from examprep.ingest import hfsync, ledger, pipeline
+
+
+def _resolve_subject(given: str | None) -> str:
+    """Use the given subject, or the only subject that exists locally."""
+    from examprep import config
+
+    if given:
+        return ledger.safe_subject(given)
+    found = sorted(p.name for p in config.data_dir().iterdir() if (p / "ledger.sqlite").exists())
+    if len(found) == 1:
+        print(f"Subject: {found[0]}")
+        return found[0]
+    if not found:
+        sys.exit("No subjects yet. Run examprep-ingest first, or pass --subject.")
+    sys.exit("Several subjects exist, so pass --subject. Subjects: " + ", ".join(found))
 
 
 def ingest_main(argv: list[str] | None = None) -> None:
@@ -31,17 +48,30 @@ def ingest_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--pull", action="store_true", help="download the remote ledger first (replaces the local one)")
     parser.add_argument("--no-ocr", action="store_true", help="skip OCR even if Tesseract is installed")
     parser.add_argument("--force", action="store_true", help="re-read files that were already ingested")
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help="skip files whose name matches, e.g. --exclude '*syllabus*' (can be repeated)",
+    )
     args = parser.parse_args(argv)
 
     subject = ledger.safe_subject(args.subject)
     if args.pull or (args.push and not ledger.db_path(subject).exists()):
         try:
             got = hfsync.pull(subject)
-            print("Downloaded existing ledger from Hugging Face." if got else "No ledger on Hugging Face yet; starting fresh.")
+            print(
+                "Downloaded existing ledger from Hugging Face."
+                if got
+                else "No ledger on Hugging Face yet; starting fresh."
+            )
         except hfsync.SyncError as e:
             sys.exit(str(e))
 
-    report = pipeline.ingest(args.inputs, subject, use_ocr=False if args.no_ocr else None, force=args.force)
+    report = pipeline.ingest(
+        args.inputs, subject, use_ocr=False if args.no_ocr else None, force=args.force, exclude=args.exclude
+    )
     print()
     print(pipeline.format_report(report))
 
@@ -55,11 +85,11 @@ def ingest_main(argv: list[str] | None = None) -> None:
 
 def report_main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="examprep-report", description="Show the page ledger summary for a subject.")
-    parser.add_argument("--subject", required=True)
+    parser.add_argument("--subject", help="optional when only one subject exists")
     parser.add_argument("--pull", action="store_true", help="download the latest ledger from Hugging Face first")
     parser.add_argument("--json", action="store_true", help="print the full summary as JSON")
     args = parser.parse_args(argv)
-    subject = ledger.safe_subject(args.subject)
+    subject = _resolve_subject(args.subject)
     if args.pull:
         try:
             hfsync.pull(subject)
@@ -80,8 +110,106 @@ def report_main(argv: list[str] | None = None) -> None:
     for f in cov["files"]:
         extra = f" ({f['error']})" if f["error"] else ""
         print(f"  [{f['status']}] {f['name']}  {f['pages']} page(s){extra}")
-    print(
-        f"{cov['pages_total']} page(s): {by.get('ok', 0)} ok, {by.get('needs_ocr', 0)} need OCR, {by.get('empty', 0)} empty"
-    )
+    ok, need, empty = by.get("ok", 0), by.get("needs_ocr", 0), by.get("empty", 0)
+    print(f"{cov['pages_total']} page(s): {ok} ok, {need} need OCR, {empty} empty")
     if cov["empty_pages"]:
         print("Pages with no text: " + ", ".join(cov["empty_pages"][:50]))
+
+
+def topics_main(argv: list[str] | None = None) -> None:
+    import yaml
+
+    from examprep.structure import build
+
+    parser = argparse.ArgumentParser(
+        prog="examprep-topics",
+        description="Build the topic map (decks, topics, page ranges) from the subject's page ledger.",
+    )
+    parser.add_argument("--subject", help="optional when only one subject exists")
+    parser.add_argument("--syllabus", type=Path, help="syllabus file (.txt/.pdf/.pptx) to check coverage against")
+    parser.add_argument("--pull", action="store_true", help="download the latest ledger from Hugging Face first")
+    parser.add_argument(
+        "--push", action="store_true", help="upload the ledger and topic map to Hugging Face afterwards"
+    )
+    parser.add_argument("--apply-edits", action="store_true", help="save names edited in data/<subject>/topics.yaml")
+    parser.add_argument(
+        "--export", action="store_true", help="write data/<subject>/topics.yaml for editing, without rebuilding"
+    )
+    parser.add_argument(
+        "--no-rebuild",
+        action="store_true",
+        help="keep the existing topic map (only run --syllabus / --check-boundaries)",
+    )
+    parser.add_argument(
+        "--check-boundaries",
+        type=Path,
+        metavar="FILE",
+        help="YAML of true deck start pages per file, to measure boundary detection accuracy",
+    )
+    args = parser.parse_args(argv)
+    subject = _resolve_subject(args.subject)
+
+    if args.pull or (args.push and not ledger.db_path(subject).exists()):
+        try:
+            if not hfsync.pull(subject):
+                sys.exit(f"No ledger for '{subject}' on Hugging Face yet.")
+            print("Downloaded the latest ledger from Hugging Face.")
+        except hfsync.SyncError as e:
+            sys.exit(str(e))
+    if not ledger.db_path(subject).exists():
+        sys.exit(f"No ledger for '{subject}' yet. Run examprep-ingest first.")
+
+    if args.apply_edits:
+        print(f"{build.apply_edits(subject)} topic name(s) updated.")
+    elif args.export:
+        con = ledger.connect(subject)
+        try:
+            from examprep.structure import store
+
+            store.migrate(con)
+            build.export_yaml(con, ledger.subject_dir(subject) / "topics.yaml")
+        finally:
+            con.close()
+        print(f"Wrote {ledger.subject_dir(subject) / 'topics.yaml'}. Edit the names, then run with --apply-edits.")
+    else:
+        if not args.no_rebuild or not build.topic_map(subject):
+            report = build.build(subject)
+            print(f"\nSimilarity method: {report['similarity_method']}   time: {report['seconds']}s")
+            print(
+                f"{report['pages']} pages, {report['duplicate_pages']} near-duplicate pages (kept, marked), "
+                f"{report['filler_pages']} cover/contents/closing pages, "
+                f"{report['ignored_repeated_lines']} repeated lines ignored"
+            )
+            print("\nDecks:")
+            for d in report["decks"]:
+                why = ", ".join(d["why"])
+                print(f"  {d['file']}  deck {d['deck']}  pages {d['pages']}  {d['title'] or ''}  ({why})")
+                print(f"      topics from: {d.get('topics_from', '')}")
+            print("\nTopics:")
+            for t in report["topics"]:
+                print(f"  {t['topic']:>3}. {t['name']}  [{t['file']} p.{t['pages']}]  ({t['named_by']})")
+                for sec in t.get("sections", []):
+                    points = ("; ".join(sec["points"]))[:150]
+                    print(f"         - {sec['heading']} (p.{sec['pages']})" + (f": {points}" if points else ""))
+            print(
+                f"\nTo rename topics: edit {ledger.subject_dir(subject) / 'topics.yaml'}, then run with --apply-edits."
+            )
+        if args.syllabus:
+            rep = build.map_syllabus(subject, args.syllabus)
+            print(f"\nSyllabus: {rep['covered']} of {rep['points']} points found in the slides")
+            for i in rep["items"]:
+                if not i["covered"]:
+                    print(f"  NOT FOUND: {(i['unit'] + ': ') if i['unit'] else ''}{i['point']}")
+
+    if args.check_boundaries:
+        truth = yaml.safe_load(args.check_boundaries.read_text(encoding="utf-8")) or {}
+        from examprep.structure.analysis import boundary_accuracy
+
+        acc = boundary_accuracy(build.deck_starts_by_file(subject), {k: list(v) for k, v in truth.items()})
+        print("\nDeck boundary accuracy: " + ", ".join(f"{k}={v}" for k, v in acc.items()))
+
+    if args.push:
+        try:
+            print(f"\nUploaded to {hfsync.push(subject)}")
+        except hfsync.SyncError as e:
+            sys.exit(str(e))

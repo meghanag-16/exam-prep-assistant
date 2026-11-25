@@ -51,3 +51,13 @@ def coverage(subject: str) -> dict:
         return ledger.coverage(con)
     finally:
         con.close()
+
+
+@app.get("/topics/{subject}")
+def topics(subject: str) -> list[dict]:
+    from examprep.structure import build
+
+    subject = ledger.safe_subject(subject)
+    if not ledger.db_path(subject).exists():
+        raise HTTPException(404, f"no ledger for subject '{subject}'")
+    return build.topic_map(subject)

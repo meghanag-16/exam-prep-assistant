@@ -39,7 +39,9 @@ def samples(tmp_path: Path) -> Path:
     doc = pymupdf.open()
     p = doc.new_page()
     p.insert_text((72, 72), "Deadlocks", fontsize=24)
-    p.insert_text((72, 110), "A deadlock needs mutual exclusion, hold and wait, no preemption, circular wait.", fontsize=10)
+    p.insert_text(
+        (72, 110), "A deadlock needs mutual exclusion, hold and wait, no preemption, circular wait.", fontsize=10
+    )
     p.insert_image(pymupdf.Rect(72, 150, 472, 260), stream=_text_png("Bankers algorithm"))
     p = doc.new_page()  # scanned: image only
     p.insert_image(pymupdf.Rect(50, 50, 550, 200), stream=_text_png("Scanned page about paging"))
@@ -63,7 +65,8 @@ def samples(tmp_path: Path) -> Path:
     prs.save(d / "1.pptx")
 
     (d / "notes.txt").write_text(
-        "UNIT 1 INTRODUCTION\n\nAn operating system manages hardware.\n\nSCHEDULING\n\nRound robin uses a time quantum.\n",
+        "UNIT 1 INTRODUCTION\n\nAn operating system manages hardware.\n\n"
+        "SCHEDULING\n\nRound robin uses a time quantum.\n",
         encoding="utf-8",
     )
     with zipfile.ZipFile(tmp_path / "bundle.zip", "w") as z:
@@ -167,7 +170,9 @@ def test_ingest_without_ocr_then_fill_ocr_later(samples: Path, monkeypatch):
     assert cov["pages_needing_ocr"] == 4  # pdf p1 (image), p2 (scan), p3 (blank, treated as scan), slide 3 (image)
     statuses = {
         (r["name"], r["page_no"]): r["status"]
-        for r in _rows("operating_systems", "SELECT f.name, p.page_no, p.status FROM pages p JOIN files f ON f.id = p.file_id")
+        for r in _rows(
+            "operating_systems", "SELECT f.name, p.page_no, p.status FROM pages p JOIN files f ON f.id = p.file_id"
+        )
     }
     assert statuses[("course/unit_3.pdf", 2)] == "needs_ocr"
     assert statuses[("course/1.pptx", 3)] == "needs_ocr"

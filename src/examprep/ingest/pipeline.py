@@ -9,8 +9,8 @@ from __future__ import annotations
 import json
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from examprep.ingest import ledger, ocr, parsers, sources
 from examprep.ingest.convert import PptConversionError, ppt_to_pptx
@@ -37,6 +37,7 @@ def ingest(
     subject: str,
     use_ocr: bool | None = None,
     force: bool = False,
+    exclude: list[str] | tuple[str, ...] = (),
     log: Log = print,
 ) -> dict:
     """Ingest files/folders/zips into the subject's ledger and return a report."""
@@ -54,7 +55,7 @@ def ingest(
     ocr_sources: dict[int, tuple[Path, str]] = {}  # file_id -> (path to read images from, kind)
 
     try:
-        collected = sources.collect(inputs, work_dir)
+        collected = sources.collect(inputs, work_dir, exclude)
         for s in collected.skipped:
             results.append({"file": s.name, "status": "skipped", "detail": s.reason})
         log(f"{len(collected.files)} unique course file(s), {len(collected.skipped)} skipped.")
@@ -63,7 +64,9 @@ def ingest(
             existing = ledger.file_by_hash(con, src.sha256)
             if existing is not None and existing["status"] == "done" and not force:
                 same = "" if existing["name"] == src.name else f" (same content as {existing['name']})"
-                results.append({"file": src.name, "status": "already ingested", "detail": "unchanged, not read again" + same})
+                results.append(
+                    {"file": src.name, "status": "already ingested", "detail": "unchanged, not read again" + same}
+                )
                 if use_ocr and src.kind in {"pdf", "pptx", "ppt"}:
                     imgs, pages = ledger.pending_ocr_for_file(con, existing["id"])
                     if imgs or pages:
@@ -149,7 +152,8 @@ def _run_ocr(con, ocr_sources: dict[int, tuple[Path, str]], log: Log) -> dict:
 
     t0 = time.time()
     n_workers = min(ocr.worker_count(), len(jobs))
-    log(f"OCR: {len(jobs)} job(s) ({len(seen_imgs)} unique images, {len(page_keys)} scanned pages) on {n_workers} core(s) ...")
+    log(f"OCR: {len(jobs)} job(s) ({len(seen_imgs)} unique images, {len(page_keys)} scanned pages)")
+    log(f"OCR running on {n_workers} core(s) ...")
     step = max(1, len(jobs) // 10)
 
     def progress(done: int, total: int) -> None:
@@ -158,7 +162,9 @@ def _run_ocr(con, ocr_sources: dict[int, tuple[Path, str]], log: Log) -> dict:
 
     results = ocr.run_jobs(jobs, progress)
     failed = 0
-    for key, (text, err) in results.items():
+    for key, res in results.items():
+        text, err = res[0], res[1]
+        layout = res[2] if len(res) > 2 else None
         if key in page_keys:
             file_id, page_no = page_keys[key]
             con.execute(
@@ -166,6 +172,11 @@ def _run_ocr(con, ocr_sources: dict[int, tuple[Path, str]], log: Log) -> dict:
                 " WHERE file_id = ? AND page_no = ?",
                 (text if err is None else "", int(parsers.formula_candidate(text or "")), file_id, page_no),
             )
+            if layout:  # scanned page: line sizes from OCR stand in for the missing text layer
+                con.execute(
+                    "UPDATE pages SET layout_json = ? WHERE file_id = ? AND page_no = ? AND layout_json IS NULL",
+                    (json.dumps(layout), file_id, page_no),
+                )
         else:
             con.execute(
                 "UPDATE images SET ocr_text = ?, status = ? WHERE hash = ?",
@@ -178,7 +189,9 @@ def _run_ocr(con, ocr_sources: dict[int, tuple[Path, str]], log: Log) -> dict:
 
 def format_report(report: dict) -> str:
     cov = report["coverage"]
-    lines = [f"Subject: {report['subject']}   time: {report['seconds']}s   OCR: {'on' if report['ocr_enabled'] else 'off'}"]
+    lines = [
+        f"Subject: {report['subject']}   time: {report['seconds']}s   OCR: {'on' if report['ocr_enabled'] else 'off'}"
+    ]
     lines.append("")
     lines.append("This run:")
     for r in report["this_run"]:

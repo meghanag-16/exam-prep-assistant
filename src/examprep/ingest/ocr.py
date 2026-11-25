@@ -41,7 +41,41 @@ def worker_count() -> int:
     return n if n > 0 else max(1, os.cpu_count() or 1)
 
 
-def _run_job(job: OcrJob, lang: str, dpi: int, timeout: int) -> tuple[str, str | None, str | None]:
+def _keep_lines(text: str) -> str:
+    """Tidy OCR text but keep its line breaks: headings are found line by line."""
+    return "\n".join(" ".join(ln.split()) for ln in text.splitlines() if ln.strip())
+
+
+def _page_text_and_layout(img, lang: str, dpi: int, timeout: int) -> tuple[str, list]:
+    """OCR a whole scanned page. Besides the text, return one [line, size, bold]
+    entry per line (like the PDF text layer gives), with the size estimated from
+    the height of the letters, so headings can be found on scanned pages too.
+    Tesseract cannot tell bold, so bold is None."""
+    import pytesseract
+
+    d = pytesseract.image_to_data(img, lang=lang, timeout=timeout, output_type=pytesseract.Output.DICT)
+    lines: dict[tuple, list[tuple[str, int]]] = {}
+    for i, word in enumerate(d["text"]):
+        word = (word or "").strip()
+        try:
+            conf = float(d["conf"][i])
+        except (TypeError, ValueError):
+            conf = -1.0
+        if not word or conf < 0:
+            continue
+        key = (d["block_num"][i], d["par_num"][i], d["line_num"][i])
+        lines.setdefault(key, []).append((word, int(d["height"][i])))
+    layout, out = [], []
+    for words in lines.values():
+        text = " ".join(w for w, _ in words)
+        heights = sorted(h for _, h in words)
+        size = round(heights[len(heights) // 2] * 72 / dpi, 1)  # pixels -> points
+        out.append(text)
+        layout.append([text, size, None])
+    return "\n".join(out), layout
+
+
+def _run_job(job: OcrJob, lang: str, dpi: int, timeout: int) -> tuple[str, str | None, str | None, list | None]:
     # Runs inside a worker process.
     os.environ.setdefault("OMP_THREAD_LIMIT", "1")  # one core per Tesseract, the pool gives parallelism
     import pytesseract
@@ -50,35 +84,38 @@ def _run_job(job: OcrJob, lang: str, dpi: int, timeout: int) -> tuple[str, str |
 
     try:
         if job.what == "page":
-            data = render_page_png(Path(job.path), int(job.locator), dpi)
-        else:
-            data = image_bytes(Path(job.path), job.file_kind, job.locator)
+            text, layout = _page_text_and_layout(
+                to_pil(render_page_png(Path(job.path), int(job.locator), dpi)), lang, dpi, timeout
+            )
+            return job.key, text, None, layout
+        data = image_bytes(Path(job.path), job.file_kind, job.locator)
         text = pytesseract.image_to_string(to_pil(data), lang=lang, timeout=timeout)
-        return job.key, " ".join(text.split()) if text else "", None
+        return job.key, _keep_lines(text) if text else "", None, None
     except Exception as e:  # one bad image must not stop the run
-        return job.key, None, f"{e.__class__.__name__}: {e}"[:300]
+        return job.key, None, f"{e.__class__.__name__}: {e}"[:300], None
 
 
-def run_jobs(jobs: list[OcrJob], progress=None) -> dict[str, tuple[str | None, str | None]]:
-    """Run OCR jobs in parallel. Returns key -> (text, error)."""
+def run_jobs(jobs: list[OcrJob], progress=None) -> dict[str, tuple]:
+    """Run OCR jobs in parallel. Returns key -> (text, error, layout); layout is
+    only set for whole-page jobs."""
     if not jobs:
         return {}
     cfg = config.ingest()["ocr"]
     lang, dpi, timeout = cfg.get("lang", "eng"), int(cfg.get("dpi", 300)), int(cfg.get("timeout_seconds", 120))
-    results: dict[str, tuple[str | None, str | None]] = {}
+    results: dict[str, tuple] = {}
     workers = min(worker_count(), len(jobs))
     if workers == 1:
         for i, job in enumerate(jobs, 1):
-            key, text, err = _run_job(job, lang, dpi, timeout)
-            results[key] = (text, err)
+            key, *rest = _run_job(job, lang, dpi, timeout)
+            results[key] = tuple(rest)
             if progress:
                 progress(i, len(jobs))
         return results
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_run_job, job, lang, dpi, timeout) for job in jobs]
         for i, fut in enumerate(as_completed(futures), 1):
-            key, text, err = fut.result()
-            results[key] = (text, err)
+            key, *rest = fut.result()
+            results[key] = tuple(rest)
             if progress:
                 progress(i, len(jobs))
     return results
