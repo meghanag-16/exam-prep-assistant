@@ -8,6 +8,7 @@ An exam-preparation tool that works from your own course material. It reads ever
 - **Reads text in images.** Scanned pages and images inside PDFs and slides are read with OCR. Repeated images such as logos are read only once.
 - **Handles messy uploads.** Any mix of files and zips in one go. Files are identified by their content, not their extension, and duplicates are skipped.
 - **Finds the structure.** Splits a combined 200 to 300 page PDF back into its original decks, groups pages into topics with page ranges, and names each topic. Works on slides and notes from any college without per-template settings: headings are found from font size, bold text, numbering and slide titles; chapters or units become topics; repeated lines such as the course name, instructor, college and page headers are ignored; cover, contents and closing pages never become topics.
+- **Extracts formulas.** Finds pages, images and scanned pages with maths (equations, formulas, matrices, algebraic expressions, inequalities, relational algebra) and converts them to LaTeX with the symbols, their meaning and the source page. Each formula's LaTeX is checked before it is stored; broken or doubtful ones are listed for review with their page.
 - **Checks the syllabus.** Given a syllabus file, it lists which syllabus points are covered by the slides and which are not.
 - **Incremental.** Files already processed are never processed again; adding one new file only processes that file.
 
@@ -19,8 +20,9 @@ An exam-preparation tool that works from your own course material. It reads ever
 | From slides | slide titles, body text, tables, speaker notes, images |
 | From PDFs | text with font sizes and bold, tables, images, scanned pages (with line sizes from OCR) |
 | Layouts | lecture slides, combined slide PDFs, typed notes and book-style chapters, scanned slides |
+| Formulas | typed maths in PDFs (maths fonts and symbols), PowerPoint equation objects, formula images and scanned pages (read by an image model), stored as LaTeX |
 | Syllabus | `.txt`, `.pdf` or `.pptx` |
-| LLM providers | Gemini, Groq, OpenRouter (free tiers, tried in that order) |
+| LLM providers | Gemini, Groq, OpenRouter (free tiers, tried in that order); several Gemini models in turn, moving to the next when one model's free quota runs out |
 | Storage | SQLite page ledger per subject, synced to a Hugging Face dataset repo |
 | Interfaces | command line, Streamlit app, FastAPI |
 
@@ -30,6 +32,7 @@ An exam-preparation tool that works from your own course material. It reads ever
       models.yaml          LLM providers, embedding model
       ingest.yaml          file limits, OCR settings
       structure.yaml       duplicate, deck and topic detection settings
+      formulas.yaml        formula extraction batch sizes and image settings
       exam_pattern.yaml    marks-based answer templates
       trusted_sites.yaml   sites allowed for extra explanations
     src/examprep/
@@ -39,6 +42,7 @@ An exam-preparation tool that works from your own course material. It reads ever
       llm.py               LLM client with provider fallback
       ingest/              reading files: sources, parsers, OCR, page ledger, sync
       structure/           decks, topics, duplicates, syllabus mapping
+      formulas/            formula detection, LaTeX extraction, LaTeX checks, formula tables
       api/                 FastAPI backend
       ui/                  Streamlit app
     deploy/kaggle_run.py   launcher script for Kaggle
@@ -73,12 +77,18 @@ Options: `--push` uploads the ledger to the Hugging Face dataset repo, `--exclud
 
 To rename topics, edit `data/<subject>/topics.yaml` and run `uv run examprep-topics --subject operating_systems --apply-edits`. `--pull` and `--push` sync with the dataset repo.
 
-**4. Run the app**
+**4. Extract formulas**
+
+    uv run examprep-formulas "path\to\files_or_folder_or_zip" --subject operating_systems
+
+Page text is read from the ledger. The course files are needed only for formula images and scanned pages; without them those wait for the next run. The results go to `data/<subject>/formulas.md` (formulas needing review listed first) and `formulas_report.json`. Options: `--limit 20` sends at most 20 requests, `--captions` also writes short descriptions of diagram pages, `--retry-failed`, `--pull`, `--push`. Runs are resumable: if a quota runs out, the next run continues where it stopped and nothing done is sent again.
+
+**5. Run the app**
 
     uv run streamlit run src/examprep/ui/app.py
     uv run uvicorn examprep.api.main:app --port 8000
 
-**Large uploads on Kaggle (free).** Create a Kaggle notebook, paste `deploy/kaggle_run.py`, set `SUBJECT`, attach a private dataset with the course files, add the keys from `.env.example` as Kaggle Secrets and run. It installs the OCR tools, ingests the files, builds the topic map and uploads everything to the dataset repo. Set `EXAMPREP_FORCE=1` (or `FORCE = True`) to re-read files already ingested, for example to redo OCR after an update.
+**Large uploads on Kaggle (free).** Create a Kaggle notebook, paste `deploy/kaggle_run.py`, set `SUBJECT`, attach a private dataset with the course files, add the keys from `.env.example` as Kaggle Secrets and run. It installs the OCR tools, ingests the files, builds the topic map, extracts formulas and uploads everything to the dataset repo. Set `EXAMPREP_FORCE=1` (or `FORCE = True`) to re-read files already ingested, for example to redo OCR after an update.
 
 **Checks**
 
@@ -91,7 +101,12 @@ To run lint and formatting automatically before each commit: `uvx pre-commit ins
 ## Limitations
 
 - Search, marks-based answers, notes, MCQs and past-paper analysis are not available yet.
-- OCR reads printed text well, but handwriting, diagrams and equations poorly. Handwritten notes have not been tested.
+- OCR reads printed text well, but handwriting, diagrams and equations poorly. Handwritten notes have not been tested. Equations on scanned pages are therefore sent as page images to the image model instead of being read from OCR text.
+- Formula images and scanned formula pages need a provider that accepts images (Gemini by default, `vision: true` in `config/models.yaml`). Without one they are left for a later run.
+- Formula text taken from a PDF's text layer can be garbled (symbols in private font codes); the LLM rebuilds the LaTeX from it and may get it wrong. Check formulas marked for review.
+- The LaTeX check is structural (braces, environments, known commands); it does not render the formula. Rendering with KaTeX comes with the website.
+- Formula extraction has been tested with a fake LLM only, not yet against live providers.
+- Files ingested before formula detection changed need re-reading (`--force`) so their formula pages are found.
 - Scanned pages ingested before OCR line sizes were recorded need re-reading (`--force`) to get good topic headings.
 - Without Tesseract installed (for example on a laptop), scanned pages and images are marked "needs OCR" until processed on Kaggle or the hosted app.
 - Old `.ppt` files need LibreOffice or Microsoft PowerPoint to convert; otherwise re-save them as `.pptx`.

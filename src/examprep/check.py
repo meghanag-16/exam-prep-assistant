@@ -11,7 +11,7 @@ import sys
 
 import httpx
 
-from examprep import config
+from examprep import config, llm
 from examprep.ingest.convert import available_converter
 
 OK, WARN, FAIL, INFO = "OK  ", "WARN", "FAIL", "INFO"
@@ -44,15 +44,17 @@ def check_llm_provider(name: str, cfg: dict, timeout: float) -> tuple[str, str]:
     if r.status_code != 200:
         return FAIL, f"HTTP {r.status_code} from {url}"
     ids = _model_ids(r.json())
-    if cfg["model"] in ids:
-        return OK, f"key works, model '{cfg['model']}' is available"
+    models = llm.provider_models(cfg)
+    missing = [m for m in models if m not in ids]
+    if not missing:
+        return OK, f"key works, model(s) available: {', '.join(models)}"
     raw = sorted(i for i in ids if not i.startswith("models/"))
     if name == "openrouter":
         raw = [i for i in raw if i.endswith(":free")]
     shown = ", ".join(raw[:25]) + (" ..." if len(raw) > 25 else "")
     return WARN, (
-        f"key works, but model '{cfg['model']}' was not in the provider's list. "
-        f"Pick one of these in config/models.yaml: {shown}"
+        f"key works, but model(s) {', '.join(missing)} were not in the provider's list. "
+        f"Pick from these in config/models.yaml: {shown}"
     )
 
 

@@ -237,6 +237,7 @@ def test_parse_json_variants():
 
 def test_chat_falls_back_to_next_provider(monkeypatch):
     monkeypatch.setattr(llm, "available_providers", lambda: ["gemini", "groq"])
+    monkeypatch.setattr(llm, "_resting", {})
     monkeypatch.setattr(llm.time, "sleep", lambda s: None)
     monkeypatch.setattr(llm.config, "secret", lambda name: "test-key")
     seen = []
@@ -257,6 +258,40 @@ def test_chat_falls_back_to_next_provider(monkeypatch):
     monkeypatch.setattr(llm.httpx, "post", fake_post)
     assert llm.chat([{"role": "user", "content": "hi"}]) == "ok from groq"
     assert any("groq" in u for u in seen)
+
+
+def test_next_gemini_model_when_quota_runs_out(monkeypatch):
+    monkeypatch.setattr(llm, "available_providers", lambda: ["gemini"])
+    monkeypatch.setattr(llm, "_resting", {})
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    monkeypatch.setattr(llm.config, "secret", lambda name: "test-key")
+    first, second = llm.provider_models(llm.config.models()["llm"]["providers"]["gemini"])[:2]
+    seen = []
+
+    class Resp:
+        def __init__(self, code, payload=None):
+            self.status_code, self._payload, self.headers = code, payload, {}
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen.append(json["model"])
+        if json["model"] == first:
+            return Resp(429)
+        return Resp(200, {"choices": [{"message": {"content": f"ok from {json['model']}"}}]})
+
+    monkeypatch.setattr(llm.httpx, "post", fake_post)
+    assert llm.chat([{"role": "user", "content": "hi"}]) == f"ok from {second}"
+    # The spent model rests: the next request goes straight to the second model.
+    seen.clear()
+    assert llm.chat([{"role": "user", "content": "again"}]) == f"ok from {second}"
+    assert seen == [second]
+    # After the rest period the first model is tried again.
+    llm._resting[first] = 0
+    seen.clear()
+    llm.chat([{"role": "user", "content": "later"}])
+    assert seen[0] == first
 
 
 def _deck(path: Path, slides: list[tuple[str, str, str]]) -> None:

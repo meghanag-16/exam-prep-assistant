@@ -61,3 +61,15 @@ def topics(subject: str) -> list[dict]:
     if not ledger.db_path(subject).exists():
         raise HTTPException(404, f"no ledger for subject '{subject}'")
     return build.topic_map(subject)
+
+
+@app.get("/formulas/{subject}")
+def formulas(subject: str, status: str | None = None) -> list[dict]:
+    """Formulas found in the subject's material; status=needs_review lists the ones to check."""
+    from examprep.formulas import extract
+
+    subject = ledger.safe_subject(subject)
+    if not ledger.db_path(subject).exists():
+        raise HTTPException(404, f"no ledger for subject '{subject}'")
+    rows = extract.formulas(subject)
+    return [r for r in rows if not status or r["status"] == status]

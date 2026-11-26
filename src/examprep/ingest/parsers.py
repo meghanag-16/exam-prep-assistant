@@ -16,7 +16,21 @@ from pathlib import Path
 from examprep import config
 
 MATH_CHARS = set("∑∫∮√∛≤≥≠≈≡±∓×÷∂∞∝∈∉⊂⊆∪∩∀∃∇∆Δπθλμσφωαβγδεηρτχψ→←↔⇒⇔⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉")
-MATH_PATTERNS = re.compile(r"(\b\w\s*\^\s*\w|\b[a-zA-Z]\s*=\s*[-\w(]|\b(sin|cos|tan|log|ln|lim|exp)\s*\(|\d\s*/\s*\d)")
+# Fonts used for typeset maths (LaTeX Computer Modern, Symbol, Cambria Math, STIX, MathType).
+MATH_FONTS = re.compile(r"(CMMI|CMSY|CMEX|CMBSY|MSBM|MSAM|Symbol|Math|STIX|MT\s*Extra|Euclid|rsfs)", re.I)
+# Symbol-type fonts also carry bullets, so their runs count only with a letter, digit or maths sign.
+SYMBOL_FONTS = re.compile(r"symbol", re.I)
+# TeX roman: digits, = and brackets inside LaTeX maths. Counted only on a page that already has maths-font runs.
+TEX_ROMAN = re.compile(r"^(?:[A-Z]{6}\+)?(CMR|LMRoman|LMMono)", re.I)
+BULLET_GLYPHS = set("•∙·◦∗⋆*–—-▪▸►▶■□○●")
+OMML_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+MATH_PATTERNS = re.compile(
+    r"(\b\w\s*\^\s*\w|\b[a-zA-Z]\s*=\s*[-\w(]|\b(sin|cos|tan|log|ln|lim|exp)\s*\(|\d\s*/\s*\d"
+    r"|\b[a-zA-Z]{1,2}\d?\s*[*+]\s*[a-zA-Z0-9]{1,3}\b)"  # short-variable arithmetic: "br + bs", "nr * bs"
+)
+# Characters from the Symbol font as PowerPoint and Word store them (private-use area),
+# minus the codes Wingdings uses for bullets.
+PUA_BULLETS = {0xA7, 0xB7, 0xD8, 0xFC, 0xA8, 0x6C, 0x6E, 0x71, 0x75, 0x76, 0x9F, 0xE0, 0xE8, 0x3E, 0x9E, 0x77}
 
 
 @dataclass
@@ -38,24 +52,39 @@ class PageData:
     images: list[ImageRef] = field(default_factory=list)
     needs_page_ocr: bool = False
     has_formula_candidates: bool = False
+    math_spans: int = 0  # text runs set in a maths font (PDF) or equation objects (PPTX)
     ocr_text: str | None = None
     hash: str = ""
     status: str = "ok"
 
 
-def formula_candidate(text: str) -> bool:
+def formula_candidate(text: str, min_symbols: int | None = None) -> bool:
+    """True when the text holds enough maths. OCR text loses most symbols, so callers
+    checking scanned pages pass a lower min_symbols."""
     cfg = config.ingest().get("formula", {})
     if not text:
         return False
     n_sym = sum(1 for ch in text if ch in MATH_CHARS) + len(MATH_PATTERNS.findall(text))
-    return n_sym >= int(cfg.get("min_math_symbols", 6)) or n_sym / max(len(text), 1) >= float(
-        cfg.get("min_math_ratio", 0.02)
-    )
+    n_sym += sum(1 for ch in text if 0xF020 <= ord(ch) <= 0xF0FF and ord(ch) - 0xF000 not in PUA_BULLETS)
+    need = int(min_symbols if min_symbols is not None else cfg.get("min_math_symbols", 6))
+    return n_sym >= need or n_sym / max(len(text), 1) >= float(cfg.get("min_math_ratio", 0.02))
+
+
+def _math_span(font: str, text: str) -> str | None:
+    """'math' for a text run set in a maths font, 'roman' for TeX roman, else None."""
+    t = text.strip()
+    if not t or set(t) <= BULLET_GLYPHS:
+        return None
+    if MATH_FONTS.search(font):
+        if SYMBOL_FONTS.search(font) and not any(ch.isalnum() or ch in MATH_CHARS for ch in t):
+            return None  # a bullet drawn from a Symbol-type font
+        return "math"
+    return "roman" if TEX_ROMAN.search(font) else None
 
 
 def _finish(page: PageData) -> PageData:
     joined = "\n".join(x for x in (page.text, page.tables_md or "", page.notes or "") if x)
-    page.has_formula_candidates = formula_candidate(joined)
+    page.has_formula_candidates = formula_candidate(joined) or page.math_spans >= 3
     h = hashlib.sha256(joined.encode("utf-8", "ignore"))
     for img in page.images:
         h.update(img.hash.encode())
@@ -87,6 +116,7 @@ def parse_pdf(path: Path) -> list[PageData]:
             page = PageData(page_no=i + 1)
             layout = []
             biggest = (0.0, "")
+            tex_math = tex_roman = 0
             d = pg.get_text("dict", sort=True)
             for block in d.get("blocks", []):
                 for line in block.get("lines", []):
@@ -96,9 +126,14 @@ def parse_pdf(path: Path) -> list[PageData]:
                     text = "".join(s["text"] for s in spans).strip()
                     size = round(max(s["size"] for s in spans), 1)
                     bold = any(s.get("flags", 0) & 16 for s in spans)
+                    for s in spans:
+                        kind = _math_span(str(s.get("font", "")), s["text"])
+                        tex_math += kind == "math"
+                        tex_roman += kind == "roman"
                     layout.append([text, size, bold])
                     if size > biggest[0] and len(text) > 2:
                         biggest = (size, text)
+            page.math_spans = tex_math + (tex_roman if tex_math else 0)
             page.text = pg.get_text("text", sort=True).strip()
             page.layout = layout or None
             page.title = biggest[1][:200] or None
@@ -198,6 +233,13 @@ def parse_pptx(path: Path) -> list[PageData]:
                         except Exception:
                             continue
                         page.images.append(ImageRef(digest, w, h, partname))
+        # PowerPoint equations (Insert > Equation) are not part of the normal text runs:
+        # read their text so formulas are not lost, and mark the slide for formula extraction.
+        for eq in slide._element.iter(f"{{{OMML_NS}}}oMath"):
+            eq_text = "".join(t.text or "" for t in eq.iter(f"{{{OMML_NS}}}t")).strip()
+            if eq_text:
+                texts.append(f"Equation: {eq_text}")
+                page.math_spans += 3
         page.text = "\n".join(texts)
         page.tables_md = "\n\n".join(t for t in tables if t) or None
         if slide.has_notes_slide:

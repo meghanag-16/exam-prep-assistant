@@ -122,6 +122,10 @@ def main() -> None:
     extra = f' --syllabus "{syllabus}"' if syllabus else ""
     # Builds decks, topics and topic names from the ledger, then uploads the topic map.
     sh(f"examprep-topics --subject {SUBJECT} --push{extra}")
+    # Formulas, matrices and expressions as checked LaTeX. The course files are passed
+    # so formula images and scanned pages can be read; finished items are never sent again.
+    files = " ".join(f'"{p}"' for p in inputs)
+    sh(f"examprep-formulas --subject {SUBJECT} --push {files}")
 
 
 if __name__ == "__main__":

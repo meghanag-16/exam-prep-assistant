@@ -7,7 +7,17 @@ llm:
     gemini:
       base_url: https://generativelanguage.googleapis.com/v1beta/openai/
       api_key_env: GEMINI_API_KEY
-      model: gemini-2.5-flash
+      # Tried in this order: when one model's free quota runs out, the next is used.
+      # Each Gemini model has its own free quota. All listed models must accept images.
+      # Only models with a free quota (AI Studio > Usage, RPM / RPD) are listed; free daily requests in brackets.
+      models:
+        - gemini-3.8-flash        # 20 a day
+        - gemini-3.6-flash        # 20 a day
+        - gemini-4-hydrogen       # 20 a day
+        - gemini-2.5-flash        # 20 a day
+        - gemini-3.5-flash-lite   # 500 a day
+        - gemini-3.1-flash-lite   # 500 a day
+        - gemini-2.5-flash-lite
       vision: true
     groq:
       base_url: https://api.groq.com/openai/v1/
@@ -21,6 +31,7 @@ llm:
       vision: false
   timeout_seconds: 60
   max_retries: 2
+  quota_rest_seconds: 300   # a model whose quota ran out is skipped this long (or as long as the provider asks)
 
 embeddings:
   model: BAAI/bge-small-en-v1.5

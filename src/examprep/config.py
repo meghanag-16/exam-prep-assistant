@@ -58,6 +58,11 @@ def structure() -> dict[str, Any]:
     return _load_yaml("structure.yaml")
 
 
+@lru_cache
+def formulas() -> dict[str, Any]:
+    return _load_yaml("formulas.yaml")
+
+
 def secret(name: str) -> str | None:
     """Return a secret from the environment, or None if unset/blank."""
     value = os.getenv(name, "").strip()

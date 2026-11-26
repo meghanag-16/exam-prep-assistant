@@ -5,6 +5,7 @@ through these, so the same code runs locally, on Kaggle and on the Space.
   examprep-report --subject <name>
   examprep-topics --subject <name> [--syllabus FILE] [--push] [--pull] [--apply-edits] [--export]
                   [--check-boundaries FILE]
+  examprep-formulas [files/folders/zips] --subject <name> [--limit N] [--captions] [--retry-failed] [--push] [--pull]
 """
 
 from __future__ import annotations
@@ -211,5 +212,73 @@ def topics_main(argv: list[str] | None = None) -> None:
     if args.push:
         try:
             print(f"\nUploaded to {hfsync.push(subject)}")
+        except hfsync.SyncError as e:
+            sys.exit(str(e))
+
+
+def formulas_main(argv: list[str] | None = None) -> None:
+    from examprep.formulas import extract
+
+    parser = argparse.ArgumentParser(
+        prog="examprep-formulas",
+        description="Extract equations, formulas, matrices and expressions as checked LaTeX.",
+    )
+    parser.add_argument(
+        "inputs",
+        nargs="*",
+        type=Path,
+        help="the ingested course files/folders/zips (needed to read formula images and scanned pages)",
+    )
+    parser.add_argument("--subject", help="optional when only one subject exists")
+    parser.add_argument("--limit", type=int, help="at most this many items of each kind in this run (saves quota)")
+    parser.add_argument("--captions", action="store_true", help="also describe diagram pages (uses image quota)")
+    parser.add_argument("--retry-failed", action="store_true", help="send items that failed before again")
+    parser.add_argument("--pull", action="store_true", help="download the latest ledger from Hugging Face first")
+    parser.add_argument("--push", action="store_true", help="upload the ledger to Hugging Face afterwards")
+    args = parser.parse_args(argv)
+    subject = _resolve_subject(args.subject)
+    if args.pull or (args.push and not ledger.db_path(subject).exists()):
+        try:
+            if not hfsync.pull(subject):
+                sys.exit(f"No ledger for '{subject}' on Hugging Face yet.")
+        except hfsync.SyncError as e:
+            sys.exit(str(e))
+    if not ledger.db_path(subject).exists():
+        sys.exit(f"No ledger for '{subject}' yet. Run examprep-ingest first.")
+    if args.retry_failed:
+        con = ledger.connect(subject)
+        try:
+            from examprep.formulas import store
+
+            store.migrate(con)
+            con.execute("DELETE FROM formula_jobs WHERE status = 'failed'")
+            con.commit()
+        finally:
+            con.close()
+    rep = extract.extract(subject, args.inputs, limit=args.limit, captions=args.captions)
+    run = rep["this_run"]
+    print(
+        f"\nThis run: {run['sent']} item(s) read, {run['formulas']} formula(s) found"
+        + (f", {rep['captions_added']} diagram caption(s)" if args.captions else "")
+    )
+    if run["waiting_for_files"]:
+        print(f"{run['waiting_for_files']} image(s)/scanned page(s) skipped: pass the course files to read them.")
+    if run["no_vision_model"]:
+        print(f"{run['no_vision_model']} image(s) skipped: no model that reads images (set GEMINI_API_KEY).")
+    if rep["stopped"]:
+        print(rep["stopped"])
+    kinds = ", ".join(f"{k} {v}" for k, v in sorted(rep["by_kind"].items()))
+    print(
+        f"Subject total: {rep['formulas']} formula(s) ({rep['unique_formulas']} unique) on "
+        f"{rep['pages_with_formulas']} page(s)" + (f": {kinds}" if kinds else "")
+    )
+    print(f"Needs review: {rep['needs_review']} (invalid LaTeX: {rep['invalid_latex']})")
+    left = rep["still_to_do"]
+    if any(left.values()):
+        print(f"Still to do: {left['text']} page text(s), {left['image']} image(s), {left['page']} scanned page(s)")
+    print(f"Review list: {ledger.subject_dir(subject) / 'formulas.md'}")
+    if args.push:
+        try:
+            print(f"Uploaded to {hfsync.push(subject)}")
         except hfsync.SyncError as e:
             sys.exit(str(e))

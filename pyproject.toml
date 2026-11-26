@@ -34,6 +34,7 @@ examprep-check = "examprep.check:main"
 examprep-ingest = "examprep.cli:ingest_main"
 examprep-report = "examprep.cli:report_main"
 examprep-topics = "examprep.cli:topics_main"
+examprep-formulas = "examprep.cli:formulas_main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.6"]

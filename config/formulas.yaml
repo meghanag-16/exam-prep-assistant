@@ -1,0 +1,21 @@
+# Settings for formula extraction (examprep-formulas).
+
+text:
+  pages_per_request: 6        # formula pages sent to the LLM in one request (saves free-tier quota)
+  max_chars_per_page: 3500    # longer page text is cut
+
+vision:
+  # Formula images and scanned formula pages go to a model that accepts images
+  # (providers with `vision: true` in models.yaml, Gemini by default).
+  images_per_request: 4
+  max_image_px: 1600          # bigger images are scaled down before sending
+  page_dpi: 150               # scanned pages are rendered at this resolution
+  min_image_px: 60            # smaller images (icons, bullets) are never sent
+
+captions:
+  # Optional (--captions): short descriptions of diagram pages, stored on the page.
+  max_words_on_page: 60       # a page with images and at most this many words counts as a diagram page
+  images_per_request: 4
+
+logo_share: 0.2               # an image on at least this share of a file's pages (and 3+ pages) is a logo: skipped
+ocr_min_math_symbols: 2       # OCR text loses most maths symbols, so scanned pages and image text need only this many maths matches
