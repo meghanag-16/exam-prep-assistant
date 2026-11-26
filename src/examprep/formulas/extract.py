@@ -165,9 +165,12 @@ def _ask_split(ask, batch: list, log: Log) -> tuple[dict[str, list[dict]], list[
         return ask(batch), []
     except llm.ReplyCutOff as e:
         if len(batch) == 1:
+            if e.request_too_large:
+                raise llm.LLMError(str(e)) from None  # no model could take even one item now: stop, retry later
             return {}, [(batch[0], f"reply too long: {e}")]
         half = len(batch) // 2
-        log(f"  reply too long for {len(batch)} items; asking for {half} and {len(batch) - half}")
+        what = "request too large" if e.request_too_large else "reply too long"
+        log(f"  {what} for {len(batch)} items; asking for {half} and {len(batch) - half}")
         found_a, failed_a = _ask_split(ask, batch[:half], log)
         found_b, failed_b = _ask_split(ask, batch[half:], log)
         return {**found_a, **found_b}, failed_a + failed_b

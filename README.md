@@ -22,7 +22,7 @@ An exam-preparation tool that works from your own course material. It reads ever
 | Layouts | lecture slides, combined slide PDFs, typed notes and book-style chapters, scanned slides |
 | Formulas | typed maths in PDFs (maths fonts and symbols), PowerPoint equation objects, formula images and scanned pages (read by an image model), stored as LaTeX |
 | Syllabus | `.txt`, `.pdf` or `.pptx` |
-| LLM providers | Gemini, Groq, OpenRouter (free tiers, tried in that order); several Gemini models in turn, moving to the next when one model's free quota runs out |
+| LLM providers | Gemini, Groq, OpenRouter (free tiers, tried in that order), each with several models: when one model's free quota runs out or it is busy, the next is used. Requests are spaced to each model's per-minute limit, and every reply is cached in `data/llm_cache.sqlite` (synced to the dataset repo), so a repeated request never calls the API again. Set `EXAMPREP_LLM_CACHE=0` to switch the cache off. |
 | Storage | SQLite page ledger per subject, synced to a Hugging Face dataset repo |
 | Interfaces | command line, Streamlit app, FastAPI |
 

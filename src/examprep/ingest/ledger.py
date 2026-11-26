@@ -146,11 +146,12 @@ def insert_page(con: sqlite3.Connection, file_id: int, page) -> int:
 
 
 def pending_ocr_for_file(con: sqlite3.Connection, file_id: int) -> tuple[list[tuple[str, str]], list[int]]:
-    """(image hash, locator) pairs still waiting for OCR, and page numbers that need full-page OCR."""
+    """(image hash, locator) pairs still waiting for OCR (or that failed before, so a fix such as
+    reading WMF pictures applies on the next run), and page numbers that need full-page OCR."""
     imgs = con.execute(
         "SELECT DISTINCT i.hash, pi.locator FROM pages p"
         " JOIN page_images pi ON pi.page_id = p.id JOIN images i ON i.hash = pi.image_hash"
-        " WHERE p.file_id = ? AND i.status = 'pending' AND pi.locator IS NOT NULL",
+        " WHERE p.file_id = ? AND i.status IN ('pending', 'failed') AND pi.locator IS NOT NULL",
         (file_id,),
     ).fetchall()
     seen, unique = set(), []

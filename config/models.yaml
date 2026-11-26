@@ -19,18 +19,37 @@ llm:
         - gemini-3.1-flash-lite   # 500 a day
         - gemini-2.5-flash-lite
       vision: true
+      requests_per_minute: 5    # free tier per model; requests are spaced so this is not exceeded
     groq:
       base_url: https://api.groq.com/openai/v1/
       api_key_env: GROQ_API_KEY
-      model: openai/gpt-oss-120b
+      # Free models on Groq, tried in order. Names change: `uv run examprep-check` lists the ones your key sees.
+      models:
+        - openai/gpt-oss-120b
+        - llama-3.3-70b-versatile
+        - openai/gpt-oss-20b
+        - qwen/qwen3-32b
+        - meta-llama/llama-4-scout-17b-16e-instruct
+        - llama-3.1-8b-instant
       vision: false
+      requests_per_minute: 30
     openrouter:
       base_url: https://openrouter.ai/api/v1/
       api_key_env: OPENROUTER_API_KEY
-      model: google/gemma-4-31b-it:free
+      # Free (":free") models on OpenRouter, tried in order. `uv run examprep-check` lists the ones available.
+      models:
+        - google/gemma-4-31b-it:free
+        - meta-llama/llama-3.3-70b-instruct:free
+        - deepseek/deepseek-chat-v3-0324:free
+        - qwen/qwen3-235b-a22b:free
+        - mistralai/mistral-small-3.2-24b-instruct:free
       vision: false
+      requests_per_minute: 20
   timeout_seconds: 60
   max_retries: 2
+  cache:
+    enabled: true           # answer repeated requests from data/llm_cache.sqlite (synced to the dataset repo)
+    days: 60                # cached replies older than this are asked again
   quota_rest_seconds: 300   # a model whose quota ran out is skipped this long (or as long as the provider asks)
 
 embeddings:

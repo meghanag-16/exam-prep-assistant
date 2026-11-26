@@ -14,9 +14,13 @@ document can do is produce a bad answer, which later checks can catch.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
+import sqlite3
 import time
+from pathlib import Path
 
 import httpx
 
@@ -27,8 +31,18 @@ class LLMError(RuntimeError):
     pass
 
 
+# Errors that mean the key itself is refused; anything else (quota, overload, a model not
+# offered, a slow reply) is about one model, so the provider's next model is tried.
+KEY_ERRORS = ("HTTP 401", "HTTP 403")
+
+
 class ReplyCutOff(LLMError):
-    """The reply hit the output-token limit: ask for less (for example fewer pages) and try again."""
+    """The reply hit the output-token limit, or the request was too large for a provider:
+    ask for less (for example fewer pages) and try again."""
+
+    def __init__(self, message: str, request_too_large: bool = False):
+        super().__init__(message)
+        self.request_too_large = request_too_large
 
 
 SYSTEM_GUARD = (
@@ -39,6 +53,96 @@ SYSTEM_GUARD = (
 
 # model -> time.monotonic() until which it is not tried (its quota ran out)
 _resting: dict[str, float] = {}
+
+
+# ------------------------------------------------------------ reply cache
+# Every successful reply is kept in data/llm_cache.sqlite, keyed by the exact request
+# (messages and JSON mode). Asking the same thing again (re-running topics or formulas,
+# a new Kaggle session after a pull) is answered from the cache instead of the API.
+# The cache is synced with the dataset repo by hfsync, next to the ledgers.
+
+
+def cache_enabled() -> bool:
+    env = os.getenv("EXAMPREP_LLM_CACHE")
+    if env is not None:
+        return env.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(config.models()["llm"].get("cache", {}).get("enabled", True))
+
+
+def cache_path() -> Path:
+    return config.data_dir() / "llm_cache.sqlite"
+
+
+def cache_key(messages: list[dict], json_mode: bool) -> str:
+    raw = json.dumps([messages, json_mode], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _cache_db() -> sqlite3.Connection:
+    con = sqlite3.connect(cache_path(), timeout=30)
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS replies (key TEXT PRIMARY KEY, reply TEXT NOT NULL, model TEXT, created REAL)"
+    )
+    return con
+
+
+def _cache_get(key: str) -> str | None:
+    days = float(config.models()["llm"].get("cache", {}).get("days", 60))
+    try:
+        con = _cache_db()
+        try:
+            row = con.execute(
+                "SELECT reply FROM replies WHERE key = ? AND created >= ?", (key, time.time() - days * 86400)
+            ).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None  # a broken cache must never stop a run
+    return row[0] if row else None
+
+
+def _cache_put(key: str, reply: str, model: str) -> None:
+    try:
+        con = _cache_db()
+        try:
+            con.execute(
+                "INSERT OR REPLACE INTO replies (key, reply, model, created) VALUES (?,?,?,?)",
+                (key, reply, model, time.time()),
+            )
+            con.commit()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        pass
+
+
+def cache_forget(messages: list[dict], json_mode: bool) -> None:
+    """Drop a cached reply that turned out to be unusable (for example not valid JSON)."""
+    try:
+        con = _cache_db()
+        try:
+            con.execute("DELETE FROM replies WHERE key = ?", (cache_key(messages, json_mode),))
+            con.commit()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        pass
+
+
+# ------------------------------------------------------------ pacing
+# Free tiers limit requests per minute per model. Waiting the right gap between
+# requests (requests_per_minute in models.yaml) avoids most HTTP 429 replies.
+_last_call: dict[str, float] = {}
+
+
+def _pace(model: str, rpm: float | None) -> None:
+    if not rpm:
+        return
+    gap = 60.0 / float(rpm)
+    wait = _last_call.get(model, -1e9) + gap - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    _last_call[model] = time.monotonic()
 
 
 def provider_models(p: dict) -> list[str]:
@@ -74,6 +178,11 @@ def chat(
     timeout = float(cfg.get("timeout_seconds", 60))
     retries = int(cfg.get("max_retries", 2))
     rest = float(cfg.get("quota_rest_seconds", 300))
+    key = cache_key(messages, json_mode) if cache_enabled() else None
+    if key:
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
     errors = []
     for name in providers if providers is not None else available_providers():
         p = cfg["providers"][name]
@@ -89,11 +198,13 @@ def chat(
                 body["response_format"] = {"type": "json_object"}
             outcome = _send(name, model, p, body, headers, timeout, retries, rest, errors)
             if outcome is not None:
+                if key:
+                    _cache_put(key, outcome, f"{name}/{model}")
                 return outcome
             if "reply cut off" in errors[-1]:
                 raise ReplyCutOff(errors[-1])
-            if not errors[-1].endswith(("HTTP 429", "HTTP 404")):
-                break  # key, network or server problem: other models of this provider would fail too
+            if errors[-1].endswith(KEY_ERRORS):
+                break  # the key is refused: the provider's other models would fail too
     if not errors:
         raise LLMError("No LLM API key is set (see .env.example).")
     raise LLMError("All LLM providers failed: " + "; ".join(errors))
@@ -102,6 +213,7 @@ def chat(
 def _send(name, model, p, body, headers, timeout, retries, rest, errors) -> str | None:
     """One model of one provider, with retries. Returns the reply, or None after adding the error."""
     for attempt in range(retries + 1):
+        _pace(model, p.get("requests_per_minute"))
         try:
             r = httpx.post(p["base_url"].rstrip("/") + "/chat/completions", json=body, headers=headers, timeout=timeout)
         except httpx.HTTPError as e:
@@ -162,6 +274,7 @@ def chat_json(
     for less."""
     cfg = config.models()["llm"]["providers"]
     errors = []
+    too_large = False
     for name in providers if providers is not None else available_providers():
         for model in provider_models(cfg[name]):
             try:
@@ -173,18 +286,23 @@ def chat_json(
                 continue
             except LLMError as e:
                 errors.append(str(e).replace("All LLM providers failed: ", ""))
-                if "quota used up" in str(e) or str(e).endswith(("HTTP 429", "HTTP 404")):
-                    continue  # this model is spent: try the provider's next one
-                break  # key or network problem: the provider's other models would fail too
+                too_large = too_large or str(e).endswith("HTTP 413")
+                if str(e).endswith(KEY_ERRORS):
+                    break  # the key is refused: the provider's other models would fail too
+                continue  # quota, overload (HTTP 503), request too large or a slow reply: try the next model
             try:
                 return parse_json(reply)
             except LLMError:
+                cache_forget(messages, True)
                 tail = reply.rstrip().removesuffix("```").rstrip()
                 if raise_cut_off and tail[:1] in "{[" and tail[-1:] not in "}]":
                     raise ReplyCutOff(f"{name}/{model}: reply ended before the JSON was complete") from None
                 errors.append(f"{name}/{model}: reply was not valid JSON (starts: {reply[:60]!r})")
     if not errors:
         raise LLMError("No LLM API key is set (see .env.example).")
+    if raise_cut_off and too_large:
+        # Some provider said the request was too large (HTTP 413): a smaller request may get through.
+        raise ReplyCutOff("request too large: " + "; ".join(errors), request_too_large=True)
     raise LLMError("; ".join(errors))
 
 

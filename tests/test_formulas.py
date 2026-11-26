@@ -262,3 +262,37 @@ def test_vector_pictures_are_recognised():
     if shutil.which("soffice") or shutil.which("libreoffice"):
         img = parsers.to_pil(svg)
         assert img.size[0] > 10 and img.convert("L").getextrema()[0] < 128  # something dark was drawn
+
+
+def test_busy_model_moves_on_and_too_large_request_is_split(monkeypatch):
+    monkeypatch.setattr(llm, "available_providers", lambda: ["gemini", "groq"])
+    gem = llm.provider_models(llm.config.models()["llm"]["providers"]["gemini"])
+    tried = []
+
+    def fake_chat(messages, *a, providers=None, models=None, **k):
+        tried.append(models[0])
+        if models[0] == gem[0]:
+            raise llm.LLMError(f"All LLM providers failed: gemini/{gem[0]}: HTTP 503")
+        if models[0] == gem[1]:
+            return '{"items": []}'
+        raise AssertionError("not reached")
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    assert llm.chat_json([{"role": "user", "content": "x"}], raise_cut_off=True) == {"items": []}
+    assert tried == gem[:2]  # an overloaded model does not end the provider
+
+    def all_busy(messages, *a, providers=None, models=None, **k):
+        code = "HTTP 413" if providers[0] == "groq" else "HTTP 429"
+        raise llm.LLMError(f"All LLM providers failed: {providers[0]}/{models[0]}: {code}")
+
+    monkeypatch.setattr(llm, "chat", all_busy)
+    with pytest.raises(llm.ReplyCutOff) as err:
+        llm.chat_json([{"role": "user", "content": "x"}], raise_cut_off=True)
+    assert err.value.request_too_large
+    # One page that is still too large stops the run (retried next time) instead of being marked failed.
+
+    def ask(b):
+        raise llm.ReplyCutOff("request too large", request_too_large=True)
+
+    with pytest.raises(llm.LLMError):
+        extract._ask_split(ask, [{"key": "a"}, {"key": "b"}], lambda m: None)
