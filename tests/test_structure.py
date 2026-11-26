@@ -339,7 +339,7 @@ def test_repeated_course_and_instructor_lines_are_ignored(tmp_path: Path):
 def test_chat_json_skips_provider_with_cut_off_reply(monkeypatch):
     monkeypatch.setattr(llm, "available_providers", lambda: ["gemini", "groq"])
     replies = {"gemini": '{"names": [{"id": 0, "na', "groq": '{"names": []}'}
-    monkeypatch.setattr(llm, "chat", lambda messages, *a, providers=None, **k: replies[providers[0]])
+    monkeypatch.setattr(llm, "chat", lambda messages, *a, providers=None, models=None, **k: replies[providers[0]])
     assert llm.chat_json([{"role": "user", "content": "x"}]) == {"names": []}
 
 

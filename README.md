@@ -102,6 +102,8 @@ To run lint and formatting automatically before each commit: `uvx pre-commit ins
 
 - Search, marks-based answers, notes, MCQs and past-paper analysis are not available yet.
 - OCR reads printed text well, but handwriting, diagrams and equations poorly. Handwritten notes have not been tested. Equations on scanned pages are therefore sent as page images to the image model instead of being read from OCR text.
+- Old slides often hold equations as WMF/EMF pictures; these are drawn with LibreOffice before OCR and formula reading, so they are read on Kaggle and in the Space, not on a laptop without LibreOffice.
+- A reply cut off by the model's output limit is asked again with fewer pages at a time; a single page whose reply is still too long is marked failed and can be retried with `--retry-failed`.
 - Formula images and scanned formula pages need a provider that accepts images (Gemini by default, `vision: true` in `config/models.yaml`). Without one they are left for a later run.
 - Formula text taken from a PDF's text layer can be garbled (symbols in private font codes); the LLM rebuilds the LaTeX from it and may get it wrong. Check formulas marked for review.
 - The LaTeX check is structural (braces, environments, known commands); it does not render the formula. Rendering with KaTeX comes with the website.

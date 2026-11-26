@@ -1,5 +1,7 @@
 # Settings for formula extraction (examprep-formulas).
 
+max_output_tokens: 16384     # longest reply allowed; a reply cut off at this limit is asked again in halves
+
 text:
   pages_per_request: 6        # formula pages sent to the LLM in one request (saves free-tier quota)
   max_chars_per_page: 3500    # longer page text is cut

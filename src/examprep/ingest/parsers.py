@@ -320,10 +320,80 @@ def render_page_png(path: Path, page_no: int, dpi: int) -> bytes:
         return pix.tobytes("png")
 
 
-def to_pil(data: bytes):
-    from PIL import Image
+def vector_kind(data: bytes) -> str | None:
+    """'emf', 'wmf' or 'svg' for vector pictures PIL cannot open (old PowerPoint and Word
+    equations are usually WMF/EMF pictures), else None."""
+    head = data[:2048]
+    if data[40:44] == b" EMF":
+        return "emf"
+    if head[:4] == b"\xd7\xcd\xc6\x9a" or (head[:2] in (b"\x01\x00", b"\x02\x00") and head[2:4] == b"\x09\x00"):
+        return "wmf"
+    if b"<svg" in head.lower():
+        return "svg"
+    return None
 
-    img = Image.open(io.BytesIO(data))
+
+def vector_to_png(data: bytes, kind: str, timeout: int = 120) -> bytes:
+    """Draw a WMF/EMF/SVG picture as PNG with LibreOffice (installed on Kaggle and in the
+    Space), cropped to its content. Raises RuntimeError when LibreOffice is missing."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    from PIL import Image, ImageOps
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        raise RuntimeError(f"{kind.upper()} picture: LibreOffice is needed to read it")
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / f"picture.{kind}"
+        src.write_bytes(data)
+        profile = Path(tmp, "profile").as_uri()  # own profile: several OCR workers can convert at once
+        subprocess.run(
+            [
+                soffice,
+                f"-env:UserInstallation={profile}",
+                "--headless",
+                "--convert-to",
+                "png",
+                "--outdir",
+                tmp,
+                str(src),
+            ],
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        out = Path(tmp) / "picture.png"
+        if not out.exists():
+            raise RuntimeError(f"{kind.upper()} picture could not be converted")
+        img = Image.open(out).convert("RGB")
+        box = ImageOps.invert(img.convert("L")).getbbox()  # LibreOffice draws it on a whole page
+        if box:
+            pad = 12
+            img = img.crop((max(box[0] - pad, 0), max(box[1] - pad, 0), box[2] + pad, box[3] + pad))
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        return buf.getvalue()
+
+
+def open_image(data: bytes):
+    """PIL image from raw bytes, drawing WMF/EMF/SVG pictures with LibreOffice first."""
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        return img
+    except (UnidentifiedImageError, OSError):
+        kind = vector_kind(data)
+        if not kind:
+            raise
+        return Image.open(io.BytesIO(vector_to_png(data, kind)))
+
+
+def to_pil(data: bytes):
+    img = open_image(data)
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
     return img

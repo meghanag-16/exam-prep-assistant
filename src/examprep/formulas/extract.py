@@ -121,7 +121,9 @@ def plan(con) -> dict[str, list[dict]]:
                 continue
             # A picture is worth reading when its page has maths or its own OCR text looks like maths.
             # Pictures whose OCR found no words are often typeset equations, so they count too on maths pages.
-            if not (candidate or looks_like_maths(img["ocr_text"], scanned=True)):
+            # WMF/EMF pictures in slides are usually equations from the old equation editor or MathType.
+            vector = str(img["locator"] or "").lower().endswith((".wmf", ".emf"))
+            if not (candidate or vector or looks_like_maths(img["ocr_text"], scanned=True)):
                 continue
             seen_images.add(h)
             key = _key("image", h)
@@ -152,6 +154,25 @@ def _items(data, ids: list[str]) -> dict[str, list[dict]]:
     return out
 
 
+def _max_tokens() -> int:
+    return int(config.formulas().get("max_output_tokens", 16384))
+
+
+def _ask_split(ask, batch: list, log: Log) -> tuple[dict[str, list[dict]], list[tuple[object, str]]]:
+    """Ask for a batch; when the reply is too long, ask for each half separately.
+    Returns (formulas by id, [(item, error)] for single items whose reply was still too long)."""
+    try:
+        return ask(batch), []
+    except llm.ReplyCutOff as e:
+        if len(batch) == 1:
+            return {}, [(batch[0], f"reply too long: {e}")]
+        half = len(batch) // 2
+        log(f"  reply too long for {len(batch)} items; asking for {half} and {len(batch) - half}")
+        found_a, failed_a = _ask_split(ask, batch[:half], log)
+        found_b, failed_b = _ask_split(ask, batch[half:], log)
+        return {**found_a, **found_b}, failed_a + failed_b
+
+
 def _ask_text(batch: list[dict]) -> dict[str, list[dict]]:
     max_chars = int(config.formulas().get("text", {}).get("max_chars_per_page", 3500))
     material = json.dumps([{"id": j["key"], "text": j["text"][:max_chars]} for j in batch], ensure_ascii=False)
@@ -162,7 +183,9 @@ def _ask_text(batch: list[dict]) -> dict[str, list[dict]]:
         f"<material>{material}</material>"
     )
     data = llm.chat_json(
-        [{"role": "system", "content": llm.SYSTEM_GUARD}, {"role": "user", "content": prompt}], max_tokens=8192
+        [{"role": "system", "content": llm.SYSTEM_GUARD}, {"role": "user", "content": prompt}],
+        max_tokens=_max_tokens(),
+        raise_cut_off=True,
     )
     return _items(data, [j["key"] for j in batch])
 
@@ -183,7 +206,8 @@ def _ask_images(batch: list[tuple[dict, bytes]], providers: list[str]) -> dict[s
         content.append(llm.image_part(data, "image/jpeg"))
     data = llm.chat_json(
         [{"role": "system", "content": llm.SYSTEM_GUARD}, {"role": "user", "content": content}],
-        max_tokens=8192,
+        max_tokens=_max_tokens(),
+        raise_cut_off=True,
         providers=providers,
     )
     return _items(data, [j["key"] for j, _ in batch])
@@ -220,7 +244,7 @@ def _jpeg(data: bytes) -> bytes:
     from PIL import Image
 
     max_px = int(config.formulas().get("vision", {}).get("max_image_px", 1600))
-    img = Image.open(io.BytesIO(data))
+    img = parsers.open_image(data)  # also WMF/EMF equation pictures from old slides
     if img.mode not in ("RGB", "L"):
         bg = Image.new("RGB", img.size, "white")
         bg.paste(img.convert("RGBA"), mask=img.convert("RGBA").split()[-1])
@@ -362,13 +386,18 @@ def extract(
         for i in range(0, len(todo["text"]) if not stopped else 0, per):
             batch = todo["text"][i : i + per]
             try:
-                found = _ask_text(batch)
+                found, too_long = _ask_split(_ask_text, batch, log)
             except llm.LLMError as e:
                 stopped = f"LLM unavailable ({e}); finished work is saved, run again to continue."
                 break
+            skip = {id(j) for j, _ in too_long}
+            for job, err in too_long:
+                _fail(con, job, "text", err)
+                stats["failed"] += 1
             for job in batch:
-                stats["formulas"] += _save(con, job, "text", found.get(job["key"], []))
-                stats["sent"] += 1
+                if id(job) not in skip:
+                    stats["formulas"] += _save(con, job, "text", found.get(job["key"], []))
+                    stats["sent"] += 1
             con.commit()
             log(f"  text {min(i + per, len(todo['text']))}/{len(todo['text'])}")
         # 2. Images and scanned pages, several per request, to a model that reads images.
@@ -388,13 +417,19 @@ def extract(
         for i in range(0, len(ready) if not stopped else 0, per):
             batch = ready[i : i + per]
             try:
-                found = _ask_images([(j, d) for _, j, d in batch], vision)
+                found, too_long = _ask_split(lambda b: _ask_images([(j, d) for _, j, d in b], vision), batch, log)
             except llm.LLMError as e:
                 stopped = f"Image model unavailable ({e}); finished work is saved, run again to continue."
                 break
-            for source, job, _ in batch:
-                stats["formulas"] += _save(con, job, source, found.get(job["key"], []))
-                stats["sent"] += 1
+            skip = {id(item) for item, _ in too_long}
+            for (source, job, _), err in too_long:
+                _fail(con, job, source, err)
+                stats["failed"] += 1
+            for item in batch:
+                source, job, _ = item
+                if id(item) not in skip:
+                    stats["formulas"] += _save(con, job, source, found.get(job["key"], []))
+                    stats["sent"] += 1
             con.commit()
             log(f"  images {min(i + per, len(ready))}/{len(ready)}")
         # 3. Optional diagram captions.

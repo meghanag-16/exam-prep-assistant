@@ -88,7 +88,7 @@ def test_powerpoint_equations_are_read(tmp_path: Path):
 
 
 def _fake_text_reply(seen: list):
-    def fake(messages, temperature=0.1, max_tokens=4096, providers=None):
+    def fake(messages, temperature=0.1, max_tokens=4096, providers=None, raise_cut_off=False):
         seen.append((messages, providers))
         content = messages[-1]["content"]
         if isinstance(content, list):  # image request
@@ -210,3 +210,55 @@ def test_unescaped_latex_in_json_reply_is_kept():
     # If a broken one still gets through, the check rejects it.
     assert not validate.check("\x08egin{bmatrix}1 & 2\\end{bmatrix}").valid
     assert not validate.check("a \x0crac{1}{2}").valid
+
+
+def test_long_reply_is_asked_again_in_halves(tmp_path: Path, monkeypatch):
+    pdf = tmp_path / "maths.pdf"
+    _maths_pdf(pdf)
+    pipeline.ingest([pdf], "maths", use_ocr=False, log=lambda m: None)
+    con = ledger.connect("maths")
+    from examprep.formulas import store
+
+    store.migrate(con)
+    jobs = extract.plan(con)["text"]
+    con.close()
+    batch = [jobs[0]] + [dict(jobs[0], key=f"k{i}") for i in range(4)]  # 5 items
+    calls = []
+
+    def ask(b):
+        calls.append(len(b))
+        if len(b) > 2:
+            raise llm.ReplyCutOff("cut off")
+        if any(j["key"] == "k3" for j in b):  # this page's reply is too long even on its own
+            raise llm.ReplyCutOff("cut off")
+        return {j["key"]: [{"latex": "x = 1"}] for j in b}
+
+    found, failed = extract._ask_split(ask, batch, lambda m: None)
+    assert calls[0] == 5 and set(found) == {jobs[0]["key"], "k0", "k1", "k2"}
+    assert [j["key"] for j, _ in failed] == ["k3"]
+
+
+def test_json_reply_tries_next_model_then_reports_cut_off(monkeypatch):
+    monkeypatch.setattr(llm, "available_providers", lambda: ["gemini"])
+    first, second = llm.provider_models(llm.config.models()["llm"]["providers"]["gemini"])[:2]
+    replies = {first: "Sorry, here you go: items", second: '{"items": []}'}
+    monkeypatch.setattr(llm, "chat", lambda messages, *a, models=None, **k: replies[models[0]])
+    assert llm.chat_json([{"role": "user", "content": "x"}], raise_cut_off=True) == {"items": []}
+    replies[first] = '{"items": [{"id": "a", "formulas": [{"latex": "x'
+    with pytest.raises(llm.ReplyCutOff):
+        llm.chat_json([{"role": "user", "content": "x"}], raise_cut_off=True)
+
+
+def test_vector_pictures_are_recognised():
+    # Old PowerPoint/Word equations are often WMF/EMF pictures, which PIL cannot open.
+    assert parsers.vector_kind(b"\xd7\xcd\xc6\x9a" + b"\0" * 60) == "wmf"
+    assert parsers.vector_kind(b"\x01\x00\x09\x00" + b"\0" * 60) == "wmf"
+    assert parsers.vector_kind(b"\x01\0\0\0" + b"\0" * 36 + b" EMF" + b"\0" * 20) == "emf"
+    assert parsers.vector_kind(b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>') == "svg"
+    assert parsers.vector_kind(_png()) is None
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="80"><text x="10" y="50">x+y</text></svg>'
+    import shutil
+
+    if shutil.which("soffice") or shutil.which("libreoffice"):
+        img = parsers.to_pil(svg)
+        assert img.size[0] > 10 and img.convert("L").getextrema()[0] < 128  # something dark was drawn
