@@ -51,10 +51,106 @@ class Hit:
             "topic": self.topic,
             "heading": self.heading,
             "pages": self.pages,
-            "where": ", ".join(f"{p['file']} p.{p['page_no']}" for p in self.pages),
+            "where": where(self.pages),
             "text": self.text,
             "formula_ids": self.formula_ids,
         }
+
+
+def _ranges(nums: list[int]) -> str:
+    """[4, 5, 6, 9] -> "4-6, 9"."""
+    out, start, prev = [], None, None
+    for n in sorted(set(nums)):
+        if start is None:
+            start = prev = n
+        elif n == prev + 1:
+            prev = n
+        else:
+            out.append(f"{start}-{prev}" if prev != start else str(start))
+            start = prev = n
+    if start is not None:
+        out.append(f"{start}-{prev}" if prev != start else str(start))
+    return ", ".join(out)
+
+
+def where(pages: list[dict]) -> str:
+    """'1parallel.pptx p.4-6' (file name without its folder, page ranges)."""
+    by_file: dict[str, list[int]] = {}
+    for p in pages:
+        by_file.setdefault(p["name"], []).append(p["page_no"])
+    return "; ".join(f"{name} p.{_ranges(nums)}" for name, nums in by_file.items())
+
+
+def _join_text(a: str, b: str) -> str:
+    """Join two chunk texts, dropping the words they share (overlapping windows) and a
+    repeated first line (the topic and heading line)."""
+    a_lines, b_lines = a.split("\n"), b.split("\n")
+    if len(b_lines) > 1 and b_lines[0] == a_lines[0]:
+        b = "\n".join(b_lines[1:])
+    aw, bw = a.split(), b.split()
+    for m in range(min(len(aw), len(bw), 200), 2, -1):
+        if aw[-m:] == bw[:m]:
+            return a + " " + " ".join(bw[m:])
+    if b in a:
+        return a
+    return a + "\n...\n" + b
+
+
+def merge_overlapping(hits: list[Hit], k: int, max_pages: int = 4) -> list[Hit]:
+    """Results that share a page, or are neighbouring pages of the same topic, become one
+    result covering all their pages, at the rank and score of the best of them
+    (overlapping windows, a section split in two, an explanation over three slides). Only
+    results ranked in the first 2k are joined, and a result never grows past max_pages
+    pages; a lower overlapping result is simply left out, so it is not shown twice."""
+
+    def touches(h: Hit, g: Hit) -> bool:
+        if {p["page_id"] for p in h.pages} & {p["page_id"] for p in g.pages}:
+            return True
+        # Neighbouring pages of the same file and topic (pages 4, 5 and 6 of one explanation).
+        return h.topic == g.topic and any(
+            a["file"] == b["file"] and abs(a["page_no"] - b["page_no"]) == 1 for a in h.pages for b in g.pages
+        )
+
+    groups: list[Hit] = []
+    for rank, h in enumerate(hits):
+        ids = {p["page_id"] for p in h.pages}
+        target = next((g for g in groups if touches(h, g)), None)
+        if target is not None:
+            shared = bool(ids & {p["page_id"] for p in target.pages})
+            pages_after = len(ids | {p["page_id"] for p in target.pages})
+            if shared and pages_after == len({p["page_id"] for p in target.pages}):
+                continue  # adds no page: already shown
+            if rank >= 2 * k or pages_after > max_pages:
+                if shared:
+                    continue  # same pages again: not shown twice
+                target = None  # only a neighbour: shown as its own result
+        if target is None:
+            groups.append(
+                Hit(h.chunk_id, h.score, h.text, list(h.pages), h.topic, h.heading, list(h.formula_ids), h.rerank_score)
+            )
+            continue
+        known = {p["page_id"] for p in target.pages}
+        target.pages = sorted(
+            target.pages + [p for p in h.pages if p["page_id"] not in known], key=lambda p: (p["file"], p["page_no"])
+        )
+        # Keep the text in page order: the chunk that starts earlier goes first.
+        first_new = min((p["page_no"] for p in h.pages), default=0)
+        first_old = min((p["page_no"] for p in target.pages if p["page_id"] in known), default=0)
+        target.text = _join_text(h.text, target.text) if first_new < first_old else _join_text(target.text, h.text)
+        target.formula_ids += [f for f in h.formula_ids if f not in target.formula_ids]
+    return groups
+
+
+def min_rerank_score(subject: str) -> float | None:
+    """Reranker scores below this are dropped: the threshold examprep-eval found for this
+    subject, else config/search.yaml min_rerank_score."""
+    p = settings_path(subject)
+    if p.exists():
+        saved = json.loads(p.read_text(encoding="utf-8")).get("refusal_threshold")
+        if saved is not None:
+            return float(saved)
+    value = config.search()["search"].get("min_rerank_score")
+    return None if value is None else float(value)
 
 
 class Searcher:
@@ -74,7 +170,12 @@ class Searcher:
         chunking.migrate(self.con)
         self.qc = index.client(self.subject)
         self.pages = {
-            r["id"]: {"page_id": r["id"], "file": r["name"], "page_no": r["page_no"]}
+            r["id"]: {
+                "page_id": r["id"],
+                "file": r["name"],
+                "name": r["name"].replace("\\", "/").rsplit("/", 1)[-1],
+                "page_no": r["page_no"],
+            }
             for r in self.con.execute("SELECT p.id, p.page_no, f.name FROM pages p JOIN files f ON f.id = p.file_id")
         }
         self.topics = {r[0]: r[1] for r in self.con.execute("SELECT id, name FROM topics")}
@@ -105,8 +206,17 @@ class Searcher:
             formula_ids=json.loads(r["formula_ids"] or "[]"),
         )
 
-    def search(self, query: str, chunking_method: str | None = None, mode: str | None = None, k: int | None = None):
-        """Returns (hits, info). info says which mode really ran and how long it took."""
+    def search(
+        self,
+        query: str,
+        chunking_method: str | None = None,
+        mode: str | None = None,
+        k: int | None = None,
+        cut: bool = True,
+    ):
+        """Returns (hits, info). info says which mode really ran and how long it took.
+        Results sharing a page are merged into one. With cut (and the reranker), results
+        scoring below the subject's threshold are dropped, so weak matches are not shown."""
         from qdrant_client import models as qm
 
         defaults = default_settings(self.subject)
@@ -152,6 +262,13 @@ class Searcher:
                 for h, s in zip(top, score(query, [h.text for h in top]), strict=True):
                     h.rerank_score = s
                 hits = sorted(top, key=lambda h: h.rerank_score, reverse=True) + hits[len(top) :]
+                floor = min_rerank_score(self.subject) if cut else None
+                if floor is not None:
+                    kept = [h for h in hits if h.rerank_score is not None and h.rerank_score >= floor]
+                    if len(kept) < len(hits):
+                        notes.append(f"Weak matches (reranker score below {floor}) were left out.")
+                    hits = kept
+        hits = merge_overlapping(hits, k, int(cfg.get("merge_max_pages", 4)))
         info = {
             "chunking": method,
             "mode": ran,

@@ -106,7 +106,7 @@ def run(
                 ran = mode
                 miss = []
                 for q, pages in questions:
-                    hits, info = s.search(q["question"], method, mode, depth)
+                    hits, info = s.search(q["question"], method, mode, depth, cut=False)
                     ran = info["mode"]
                     times.append(info["ms"])
                     rank = next((i + 1 for i, h in enumerate(hits) if pages & {p["page_id"] for p in h.pages}), None)
@@ -120,7 +120,7 @@ def run(
                 for q in data["outside"]:
                     if not q.get("question"):
                         continue
-                    hits, info = s.search(q["question"], method, mode, 1)
+                    hits, info = s.search(q["question"], method, mode, 1, cut=False)
                     score = _top_score(hits, info["mode"])
                     if score is not None:
                         out_scores.append(score)

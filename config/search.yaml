@@ -18,10 +18,15 @@ search:
   candidates: 30              # results taken from keyword and from vector search before merging
   rerank_top: 20              # merged results re-scored by the reranker
   top_k: 5                    # results returned
+  merge_max_pages: 4          # results sharing a page are shown as one result of at most this many pages
   # bge models search better when the question (not the passages) starts with this
   query_prefix: "Represent this sentence for searching relevant passages: "
   bm25_k1: 1.2
   bm25_b: 0.75
+  # With the reranker, results scoring below this are not shown. examprep-eval --save-best
+  # replaces it with the threshold measured on the subject's own questions. This starting
+  # value is a rough guess for bge-reranker-base scores (0 to 1); null shows all results.
+  min_rerank_score: 0.01
   # Used until examprep-eval --save-best writes data/<subject>/search_settings.json
   default_chunking: heading
   default_mode: hybrid_rerank # keyword | vector | hybrid | hybrid_rerank

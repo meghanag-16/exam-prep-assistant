@@ -128,7 +128,7 @@ def test_index_and_all_search_modes(subject: str, isolated):
     for mode in ("keyword", "vector", "hybrid"):
         out = searching.search(subject, "what is the bankers algorithm safe state", "page", mode, 3)
         assert out["mode"] == mode and out["results"]
-        assert out["results"][0]["pages"][0]["page_no"] == 6, mode
+        assert 6 in [p["page_no"] for p in out["results"][0]["pages"]], mode
     # Without a reranker the reranking mode says so and falls back to hybrid.
     out = searching.search(subject, "bankers algorithm", "page", "hybrid_rerank", 3)
     assert out["mode"] == "hybrid" and out["notes"]
@@ -150,7 +150,7 @@ def test_reranker_reorders_results(subject: str, monkeypatch):
     finally:
         s.close()
     assert info["mode"] == "hybrid_rerank"
-    assert hits[0].pages[0]["page_no"] == 9 and hits[0].rerank_score == 10.0
+    assert 9 in [p["page_no"] for p in hits[0].pages] and hits[0].rerank_score == 10.0
 
 
 def test_keyword_only_index_without_embedding_model(subject: str, monkeypatch):
@@ -158,7 +158,7 @@ def test_keyword_only_index_without_embedding_model(subject: str, monkeypatch):
     rep = index.build(subject, ["page"], log=lambda m: None)
     assert rep["keyword_only"]
     out = searching.search(subject, "round robin quantum", "page", "hybrid", 2)
-    assert out["mode"] == "keyword" and out["results"][0]["pages"][0]["page_no"] == 4
+    assert out["mode"] == "keyword" and 4 in [p["page_no"] for p in out["results"][0]["pages"]]
 
 
 def test_evalset_draft_and_evaluation(subject: str, monkeypatch):
@@ -219,3 +219,51 @@ def test_search_api(subject: str):
     r = client.get("/search/os", params={"q": "page table frames", "chunking": "heading", "mode": "keyword"})
     assert r.status_code == 200 and r.json()["results"][0]["where"].startswith("os_slides.pdf p.")
     assert client.get("/search/os", params={"q": "x", "chunking": "page"}).status_code == 400
+
+
+def _hit(cid, pages, score, topic="T", text=None):
+    return searching.Hit(
+        chunk_id=cid,
+        score=score,
+        text=text or f"text {cid}",
+        pages=[{"page_id": p, "file": "dir/a.pptx", "name": "a.pptx", "page_no": p} for p in pages],
+        topic=topic,
+        heading=None,
+    )
+
+
+def test_overlapping_and_neighbouring_results_are_merged():
+    a = "Topic\none two three four five six seven eight"
+    b = "Topic\nfive six seven eight nine ten"
+    hits = [
+        _hit(1, [4, 5], 3.0, text=a),
+        _hit(2, [5, 6], 2.9, text=b),  # shares page 5: joined, shared words not repeated
+        _hit(3, [20], 2.5, topic="Other"),
+        _hit(4, [7], 2.0),  # neighbour of page 6, same topic: joined
+        _hit(5, [21], 1.0, topic="Else"),  # neighbour of page 20 but another topic: separate
+        _hit(6, [4, 5, 6], 0.5),  # same pages again, ranked low: left out
+    ]
+    out = searching.merge_overlapping(hits, k=5, max_pages=4)
+    assert [searching.where(h.pages) for h in out] == ["a.pptx p.4-7", "a.pptx p.20", "a.pptx p.21"]
+    assert out[0].score == 3.0
+    assert out[0].text.startswith("Topic\none two three four five six seven eight nine ten")
+    assert out[0].text.count("five") == 1
+    # A result never grows past max_pages: a neighbour then stays a result of its own.
+    out = searching.merge_overlapping([_hit(1, [1, 2], 2.0), _hit(2, [3], 1.0)], k=5, max_pages=2)
+    assert len(out) == 2
+
+
+def test_weak_reranked_results_are_left_out(subject: str):
+    index.build(subject, ["page"], log=lambda m: None)
+
+    def rerank(query, texts):
+        return [0.9 if "Thrashing" in t else 0.001 for t in texts]
+
+    s = searching.Searcher(subject, reranker=rerank)
+    try:
+        hits, info = s.search("time spent paging", "page", "hybrid_rerank", 5)
+        all_hits, _ = s.search("time spent paging", "page", "hybrid_rerank", 5, cut=False)
+    finally:
+        s.close()
+    assert len(hits) == 1 and 9 in [p["page_no"] for p in hits[0].pages] and info["notes"]
+    assert len(all_hits) > 1  # evaluation sees every result
