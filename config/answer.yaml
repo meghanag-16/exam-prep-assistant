@@ -34,7 +34,7 @@ trusted:
   max_results: 5          # search results per question
   max_passages: 4         # passages that pass the relevance gate and go to the model
   passage_words: 180
-  fetch_timeout: 15
+  fetch_timeout: 8         # seconds per page; slow sites are skipped
   cache_days: 30
 
 notes:
@@ -49,7 +49,9 @@ revision:
   short_points: 10
 
 evaluation:
-  max_questions: 50       # in-material questions answered (the outside ones are always all used)
-  deeper_questions: 5     # questions also answered with extra explanations (uses search credits)
-  ragas_questions: 20     # answers scored with RAGAS (about 6 judge calls each); 0 turns it off
-  ragas_provider:         # judge model provider from models.yaml; empty = first one with a key
+  max_questions: 20       # in-material questions answered
+  max_outside_questions: 5  # outside questions answered (each searches trusted sites and reads pages)
+  deeper_questions: 2     # questions also answered with extra explanations (uses search credits)
+  ragas_questions: 10     # answers scored with RAGAS (about 6 judge calls each); 0 turns it off
+  ragas_provider:         # judge provider from models.yaml tried first; empty = models.yaml order
+  ragas_rate_limit_wait: 30  # seconds to wait once when the judge is rate-limited, before trying the next judge

@@ -14,13 +14,16 @@ For the questions outside the material, the best score each mode gives is record
 next to the scores of real questions; a score threshold that separates them is
 suggested (used later to answer "not found in your course material").
 
-Writes data/<subject>/eval/retrieval_report.json and retrieval_report.md.
+Writes data/<subject>/eval/retrieval_report.json and retrieval_report.md. The report keeps a
+key of everything it depends on (index, questions, search settings); is_current tells whether
+a new run would measure the same thing.
 With save_best, the best chunking and mode go to data/<subject>/search_settings.json
 and become the defaults for search.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import statistics
 import time
@@ -42,6 +45,29 @@ def _percentile(values: list[float], q: float) -> float:
     pos = (len(s) - 1) * q
     lo, hi = int(pos), min(int(pos) + 1, len(s) - 1)
     return round(s[lo] + (s[hi] - s[lo]) * (pos - lo), 1)
+
+
+def inputs_key(subject: str, methods: list[str] | None = None, modes: list[str] | None = None) -> str:
+    """Changes when the index, the evaluation questions, the search settings or the measured
+    methods and modes change."""
+    h = hashlib.sha256()
+    h.update(str((index.read_meta(subject) or {}).get("fingerprint")).encode())
+    q = evalset.path(subject)
+    h.update(q.read_bytes() if q.exists() else b"")
+    h.update(json.dumps(config.search(), sort_keys=True, default=str).encode())
+    h.update(repr((sorted(methods or []), sorted(modes or []))).encode())
+    return h.hexdigest()[:24]
+
+
+def is_current(subject: str, methods: list[str] | None = None, modes: list[str] | None = None) -> bool:
+    """True when the last report measured exactly what a new run would measure."""
+    subject = ledger.safe_subject(subject)
+    p = ledger.subject_dir(subject) / "eval" / "retrieval_report.json"
+    try:
+        report = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return bool(report.get("inputs")) and report["inputs"] == inputs_key(subject, methods, modes)
 
 
 def threshold(inside: list[float], outside: list[float]) -> dict | None:
@@ -106,6 +132,7 @@ def run(
     cfg = config.search()["evaluation"]
     k, depth = int(cfg.get("k", 5)), max(int(cfg.get("mrr_depth", 10)), int(cfg.get("k", 5)))
     data = evalset.load(subject)
+    key = inputs_key(subject, methods, modes)
     s = searcher or searching.Searcher(subject)
     try:
         methods = methods or list(s.meta.get("methods", {}))
@@ -192,6 +219,7 @@ def run(
             "results": rows,
             "best": {"chunking": best["chunking"], "mode": best["mode"]},
             "misses": misses,
+            "inputs": key,
             "run_at": ledger.now(),
         }
         out = ledger.subject_dir(subject) / "eval"

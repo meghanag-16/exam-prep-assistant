@@ -200,6 +200,11 @@ def test_evalset_draft_and_evaluation(subject: str, monkeypatch):
     assert searching.default_settings(subject)["mode"] == report["best"]["mode"]
     md = (ledger.subject_dir(subject) / "eval" / "retrieval_report.md").read_text(encoding="utf-8")
     assert "| page | vector |" in md
+    assert evaluate.is_current(subject)
+    assert not evaluate.is_current(subject, modes=["keyword"])
+    data["outside"].append({"id": "o9", "question": "Who wrote Hamlet?"})
+    evalset.save(subject, data)
+    assert not evaluate.is_current(subject)
 
 
 def test_refusal_threshold():

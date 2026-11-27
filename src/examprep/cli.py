@@ -3,15 +3,15 @@ through these, so the same code runs locally, on Kaggle and on the Space.
 
   examprep-ingest <files/folders/zips> --subject <name> [--push] [--pull] [--no-ocr] [--force] [--exclude PATTERN]
   examprep-report --subject <name>
-  examprep-topics --subject <name> [--syllabus FILE] [--push] [--pull] [--apply-edits] [--export]
+  examprep-topics --subject <name> [--syllabus FILE] [--if-changed] [--push] [--pull] [--apply-edits] [--export]
                   [--check-boundaries FILE]
   examprep-formulas [files/folders/zips] --subject <name> [--limit N] [--captions] [--retry-failed] [--push] [--pull]
   examprep-index --subject <name> [--methods page window heading] [--if-changed] [--push] [--pull]
   examprep-search "question" --subject <name> [--chunking C] [--mode M] [-k 5] [--json] [--pull]
   examprep-evalset --subject <name> [--count 50] [--outside 10] [--redo] [--download] [--upload] [--push] [--pull]
-  examprep-eval --subject <name> [--methods ...] [--modes ...] [--save-best] [--push] [--pull]
+  examprep-eval --subject <name> [--methods ...] [--modes ...] [--save-best] [--if-changed] [--push] [--pull]
   examprep-ask "question" --subject <name> [--marks 5] [--deeper] [--no-cache] [--json] [--pull]
-  examprep-answer-eval --subject <name> [--limit 50] [--deeper 5] [--push] [--pull]
+  examprep-answer-eval --subject <name> [--limit 20] [--deeper 2] [--if-changed] [--push] [--pull]
   examprep-notes --subject <name> [--topic ID|NAME ...] [--redo] [--export md pdf] [--marker-test] [--push] [--pull]
   examprep-revise --subject <name> [--topic ID|NAME ...] [--redo] [--export md pdf] [--push] [--pull]
 """
@@ -150,6 +150,9 @@ def topics_main(argv: list[str] | None = None) -> None:
         help="keep the existing topic map (only run --syllabus / --check-boundaries)",
     )
     parser.add_argument(
+        "--if-changed", action="store_true", help="only rebuild when the pages or the topic settings changed"
+    )
+    parser.add_argument(
         "--check-boundaries",
         type=Path,
         metavar="FILE",
@@ -181,7 +184,9 @@ def topics_main(argv: list[str] | None = None) -> None:
             con.close()
         print(f"Wrote {ledger.subject_dir(subject) / 'topics.yaml'}. Edit the names, then run with --apply-edits.")
     else:
-        if not args.no_rebuild or not build.topic_map(subject):
+        if args.if_changed and build.is_current(subject):
+            print("Topic map is up to date (pages and topic settings unchanged).")
+        elif not args.no_rebuild or not build.topic_map(subject):
             report = build.build(subject)
             print(f"\nSimilarity method: {report['similarity_method']}   time: {report['seconds']}s")
             print(
@@ -437,6 +442,9 @@ def eval_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--methods", nargs="+", choices=["page", "window", "heading"])
     parser.add_argument("--modes", nargs="+", choices=list(index.MODES))
     parser.add_argument("--save-best", action="store_true", help="make the best setting the default for search")
+    parser.add_argument(
+        "--if-changed", action="store_true", help="skip when the index, questions and settings are unchanged"
+    )
     parser.add_argument("--pull", action="store_true", help="download the latest ledger, index and questions first")
     parser.add_argument("--push", action="store_true", help="upload the report to Hugging Face afterwards")
     args = parser.parse_args(argv)
@@ -445,6 +453,14 @@ def eval_main(argv: list[str] | None = None) -> None:
     if not index.read_meta(subject) or index.is_stale(subject):
         print("Index missing or out of date: building it first.")
         index.build(subject)
+    from examprep.search import search as searching
+
+    have_best = searching.settings_path(subject).exists() or not args.save_best
+    if args.if_changed and have_best and evaluate.is_current(subject, args.methods, args.modes):
+        index.close()
+        print("Search evaluation skipped: index, questions and settings unchanged since the last report.")
+        print(f"Report: {ledger.subject_dir(subject) / 'eval' / 'retrieval_report.md'}")
+        return
     try:
         rep = evaluate.run(subject, args.methods, args.modes, save_best=args.save_best)
     except (FileNotFoundError, ValueError) as e:
@@ -540,9 +556,14 @@ def answer_eval_main(argv: list[str] | None = None) -> None:
         "refusals, latency and tokens per answer.",
     )
     parser.add_argument("--subject", help="optional when only one subject exists")
-    parser.add_argument("--limit", type=int, help="at most this many in-material questions (default 50)")
+    parser.add_argument("--limit", type=int, help="at most this many in-material questions (default 20)")
     parser.add_argument(
-        "--deeper", type=int, help="questions also answered with extra explanations (default 5, uses Tavily)"
+        "--deeper", type=int, help="questions also answered with extra explanations (default 2, uses Tavily)"
+    )
+    parser.add_argument(
+        "--if-changed",
+        action="store_true",
+        help="skip when the index, questions, settings and prompts are unchanged since the last report",
     )
     parser.add_argument("--pull", action="store_true", help="download the latest ledger, index and questions first")
     parser.add_argument("--push", action="store_true", help="upload the report to Hugging Face afterwards")
@@ -550,6 +571,11 @@ def answer_eval_main(argv: list[str] | None = None) -> None:
     subject = _resolve_subject(args.subject)
     _pull_or_require(subject, args.pull)
     _ensure_index(subject)
+    if args.if_changed and answer_eval.is_current(subject, args.limit, args.deeper):
+        index.close()
+        print("Answer evaluation skipped: nothing it depends on changed since the last report.")
+        print(f"Report: {ledger.subject_dir(subject) / 'eval' / 'answer_report.md'}")
+        return
     try:
         rep = answer_eval.run(subject, args.limit, args.deeper)
     except (FileNotFoundError, ValueError) as e:

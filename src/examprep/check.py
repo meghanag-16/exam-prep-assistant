@@ -6,6 +6,7 @@ Never prints secret values, only whether they are set and whether they work.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import sys
@@ -114,6 +115,23 @@ def check_tavily(live: bool, timeout: float) -> tuple[str, str]:
     return FAIL, f"HTTP {r.status_code} from Tavily"
 
 
+def check_langfuse() -> tuple[str, str]:
+    """Logs in to the Langfuse server the app will send traces to (keys and region must match)."""
+    if not (config.secret("LANGFUSE_PUBLIC_KEY") and config.secret("LANGFUSE_SECRET_KEY")):
+        return INFO, "LANGFUSE keys not set: tracing is off"
+    host = os.environ.get("LANGFUSE_BASE_URL") or os.environ.get("LANGFUSE_HOST") or "https://cloud.langfuse.com"
+    host = host.strip().strip('"').strip("'")
+    try:
+        from langfuse import Langfuse
+
+        ok = Langfuse(base_url=host, tracing_enabled=False).auth_check()
+    except Exception as e:  # noqa: BLE001
+        return WARN, f"could not log in to {host} ({e.__class__.__name__}): check the keys and LANGFUSE_HOST"
+    if ok:
+        return OK, f"keys work on {host}"
+    return WARN, f"keys refused by {host}: check the keys and the region in LANGFUSE_HOST"
+
+
 def check_optional() -> list[tuple[str, str, str]]:
     """Optional services and packages: missing ones are reported, not failures."""
     rows = [
@@ -122,11 +140,7 @@ def check_optional() -> list[tuple[str, str, str]]:
             if config.secret("EXA_API_KEY")
             else ("Exa search", INFO, "EXA_API_KEY not set: Tavily, then DuckDuckGo (no key) are used")
         ),
-        (
-            ("Langfuse tracing", OK, "keys are set")
-            if config.secret("LANGFUSE_PUBLIC_KEY") and config.secret("LANGFUSE_SECRET_KEY")
-            else ("Langfuse tracing", INFO, "LANGFUSE keys not set: tracing is off")
-        ),
+        ("Langfuse tracing", *check_langfuse()),
     ]
     for label, module, where in (
         ("bge models", "sentence_transformers", "extra ml: installed on Kaggle and the Space"),

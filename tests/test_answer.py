@@ -344,6 +344,12 @@ def test_answer_evaluation_report(built, monkeypatch):
     assert rep["correct_refusals"] == 1.0
     saved = json.loads((d / "answer_report.json").read_text(encoding="utf-8"))
     assert saved["questions"] == 1 and (d / "answer_report.md").exists()
+    # A repeat run with the same inputs can be skipped; other counts or edited questions cannot.
+    assert answer_eval.is_current(built, deeper=0)
+    assert not answer_eval.is_current(built, deeper=1)
+    qs["questions"][0]["question"] = "What does the bankers algorithm decide?"
+    (d / "questions.yaml").write_text(yaml.safe_dump(qs), encoding="utf-8")
+    assert not answer_eval.is_current(built, deeper=0)
 
 
 def test_api_ask(built, monkeypatch):
@@ -488,3 +494,53 @@ def test_answer_trace_names_attributes_and_scores(built, monkeypatch):
     grounded.feedback(built, r["id"], -1, "too short")
     fb = fake.scores[-1]
     assert fb["name"] == "user-feedback" and fb["value"] == -1.0 and fb["trace_id"] == "t-1"
+
+
+def test_ragas_waits_once_then_switches_judge(monkeypatch):
+    import sys
+    import types
+
+    from examprep.answer import ragas_eval
+
+    class RateLimitError(Exception):
+        pass
+
+    class BadRequestError(Exception):
+        pass
+
+    calls = []
+
+    def metric(name):
+        class Metric:
+            def __init__(self, llm):
+                self.judge = llm
+
+            async def ascore(self, **kw):
+                calls.append((self.judge, name))
+                if self.judge == "groq/a":
+                    raise RateLimitError("429 too many requests")
+                if self.judge == "groq/b":
+                    raise BadRequestError("400 bad request")
+                return types.SimpleNamespace(value=0.8)
+
+        return Metric
+
+    fake = types.ModuleType("ragas.metrics.collections")
+    fake.Faithfulness = metric("faithfulness")
+    fake.ResponseGroundedness = metric("response_groundedness")
+    fake.ContextRelevance = metric("context_relevance")
+    monkeypatch.setitem(sys.modules, "ragas", types.ModuleType("ragas"))
+    monkeypatch.setitem(sys.modules, "ragas.metrics", types.ModuleType("ragas.metrics"))
+    monkeypatch.setitem(sys.modules, "ragas.metrics.collections", fake)
+    chain = [("groq/a", {}), ("groq/b", {}), ("nvidia/c", {})]
+    monkeypatch.setattr(ragas_eval, "_judges", lambda: chain)
+    monkeypatch.setattr(ragas_eval, "_make_judge", lambda model_id, p: model_id)
+    cfg = dict(ragas_eval.config.answer())
+    cfg["evaluation"] = {**cfg["evaluation"], "ragas_rate_limit_wait": 0}
+    monkeypatch.setattr(ragas_eval.config, "answer", lambda: cfg)
+    item = {"question": "q", "answer": "a", "contexts": ["c"]}
+    res = ragas_eval.score([item, item], log=lambda m: None)
+    assert res["rows"] == [{"faithfulness": 0.8, "response_groundedness": 0.8, "context_relevance": 0.8}] * 2
+    # groq/a: rate limited twice (waited once), groq/b: refused, then nvidia/c for everything after.
+    assert [j for j, _ in calls[:3]] == ["groq/a", "groq/a", "groq/b"] and calls[3][0] == "nvidia/c"
+    assert res["judge"] == "groq/a, groq/b, nvidia/c" and any("rate" in e for e in res["errors"])

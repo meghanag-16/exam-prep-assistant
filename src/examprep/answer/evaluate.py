@@ -19,11 +19,14 @@ rejects passages.
 
 Answers are written fresh (the answer cache is not used); the LLM reply cache still
 applies, and calls it answered are counted, since they make latency look better.
-Writes data/<subject>/eval/answer_report.json and answer_report.md.
+Writes data/<subject>/eval/answer_report.json and answer_report.md. The report keeps a key of
+everything it depends on (index, questions, settings, prompts); is_current tells whether a new
+run would measure the same thing.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import statistics
 import time
@@ -33,7 +36,8 @@ from typing import Any
 from examprep import config, tracing
 from examprep.answer import grounded, ragas_eval
 from examprep.ingest import ledger
-from examprep.search import evalset
+from examprep.search import evalset, index
+from examprep.search import search as searching
 from examprep.search.evaluate import _percentile
 
 Log = Callable[[str], None]
@@ -41,6 +45,40 @@ Log = Callable[[str], None]
 
 def _share(n: int, d: int) -> float | None:
     return round(n / d, 3) if d else None
+
+
+def _counts(limit: int | None, deeper: int | None) -> tuple[int, int, int]:
+    cfg = config.answer()["evaluation"]
+    return (
+        int(limit if limit is not None else cfg.get("max_questions", 20)),
+        int(deeper if deeper is not None else cfg.get("deeper_questions", 2)),
+        int(cfg.get("max_outside_questions", 5)),
+    )
+
+
+def inputs_key(subject: str, limit: int | None = None, deeper: int | None = None) -> str:
+    """Changes when the index, the questions, the chosen search setting, the answer, model or
+    trusted-site settings, the answer prompt or the question counts change."""
+    h = hashlib.sha256()
+    h.update(str((index.read_meta(subject) or {}).get("fingerprint")).encode())
+    for p in (evalset.path(subject), searching.settings_path(subject)):
+        h.update(p.read_bytes() if p.exists() else b"")
+    models = {k: v for k, v in config.models().items() if k != "tracing"}
+    for part in (config.answer(), models, config.trusted_sites(), config.exam_pattern()):
+        h.update(json.dumps(part, sort_keys=True, default=str).encode())
+    h.update(repr((grounded.PROMPT_VERSION, _counts(limit, deeper))).encode())
+    return h.hexdigest()[:24]
+
+
+def is_current(subject: str, limit: int | None = None, deeper: int | None = None) -> bool:
+    """True when the last report measured exactly what a new run would measure."""
+    subject = ledger.safe_subject(subject)
+    p = ledger.subject_dir(subject) / "eval" / "answer_report.json"
+    try:
+        report = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return bool(report.get("inputs")) and report["inputs"] == inputs_key(subject, limit, deeper)
 
 
 def run(
@@ -51,9 +89,8 @@ def run(
     log: Log = print,
 ) -> dict:
     subject = ledger.safe_subject(subject)
-    cfg = config.answer()["evaluation"]
-    limit = int(limit if limit is not None else cfg.get("max_questions", 50))
-    deeper = int(deeper if deeper is not None else cfg.get("deeper_questions", 5))
+    key = inputs_key(subject, limit, deeper)
+    limit, deeper, max_outside = _counts(limit, deeper)
     data = evalset.load(subject)
     a = answerer or grounded.Answerer(subject)
     # Every answer of this run is its own trace, grouped in Langfuse as one session.
@@ -66,7 +103,7 @@ def run(
             if q.get("question") and pages:
                 real.append((q, pages))
         real = real[:limit]
-        outside = [q for q in data["outside"] if q.get("question")]
+        outside = [q for q in data["outside"] if q.get("question")][:max_outside]
         if not real and not outside:
             raise ValueError("No usable questions in questions.yaml.")
         rows, times, tokens, cached_calls, ragas_items = [], [], [], 0, []
@@ -106,7 +143,10 @@ def run(
                 f"  {r['ms']:.0f} ms"
             )
         out_rows = []
-        for q in outside:
+        if outside:
+            log(f"Outside questions ({len(outside)}): each searches trusted sites, reads pages, writes an answer.")
+        for n, q in enumerate(outside, start=1):
+            log(f"  outside {n}/{len(outside)}: {q['question'][:70]} ...")
             r = a.answer(q["question"], q.get("marks"), use_cache=False, **traced)
             out_rows.append(
                 {
@@ -120,9 +160,12 @@ def run(
             times.append(r["ms"])
             cached_calls += r["tokens"]["cached_calls"]
             flag = "flagged not in slides" if not r["in_slides"] else "ANSWERED FROM SLIDES"
-            log(f"  outside: {flag}  {q['question'][:70]}")
+            log(f"    {flag}, answer from {r.get('outside_source') or 'slides'}  {r['ms']:.0f} ms")
         deep_rows = []
-        for q, _pages in real[:deeper]:
+        if real[:deeper]:
+            log(f"Extra explanations ({len(real[:deeper])} questions, with trusted-site search):")
+        for n, (q, _pages) in enumerate(real[:deeper], start=1):
+            log(f"  deeper {n}/{len(real[:deeper])}: {q['question'][:70]} ...")
             r = a.answer(q["question"], q.get("marks"), deeper=True, use_cache=False, **traced)
             c, info = r["checks"], r.get("web_info") or {}
             deep_rows.append(
@@ -138,8 +181,9 @@ def run(
             )
         answered = [r for r in rows if not r["refused"]]
         ragas: dict = {"status": "not installed (pip install -e .[eval])"}
-        n_ragas = int(config.answer()["evaluation"].get("ragas_questions", 20))
+        n_ragas = int(config.answer()["evaluation"].get("ragas_questions", 10))
         if ragas_items and n_ragas > 0 and ragas_eval.available():
+            log(f"RAGAS: scoring {min(n_ragas, len(ragas_items))} answers (about 6 judge calls each, spaced out).")
             try:
                 res = ragas_eval.score(ragas_items[:n_ragas], log)
                 ragas = {
@@ -195,6 +239,7 @@ def run(
             "rows": rows,
             "outside": out_rows,
             "extra_rows": deep_rows,
+            "inputs": key,
             "run_at": ledger.now(),
         }
         out = ledger.subject_dir(subject) / "eval"

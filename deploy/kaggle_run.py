@@ -6,7 +6,11 @@ Code: cloned from CODE_REPO_URL on every run (a private repo needs a GITHUB_TOKE
 Course files: a private Kaggle dataset with one subject's PDFs/PPTs/TXTs/zips (Add Input).
       A file with "syllabus" in its name is not ingested; it is used to check syllabus coverage.
 Secrets (Add-ons > Secrets): GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY (optional),
-TAVILY_API_KEY, HF_TOKEN, HF_DATASET_REPO. Internet must be On. A GPU is optional.
+TAVILY_API_KEY, HF_TOKEN, HF_DATASET_REPO. Internet must be On. A GPU is optional but makes the
+embeddings and reranking much faster (Settings > Accelerator > GPU).
+
+Repeat runs are quick: files already ingested, an unchanged topic map, an unchanged index and
+evaluations whose inputs did not change are all skipped, and stored notes are reused.
 
 All logic lives in the examprep package; this file only sets up the machine
 and calls the CLI.
@@ -28,7 +32,8 @@ RUN_ANSWER_EVAL = os.environ.get("EXAMPREP_ANSWER_EVAL", "1").lower() in {"1", "
 # True makes full-coverage notes and quick-revision sheets for every topic (Markdown and PDF).
 RUN_NOTES = os.environ.get("EXAMPREP_NOTES", "1").lower() in {"1", "true", "yes"}
 # True also runs the coverage marker test (facts planted on 20 pages must all reach the notes).
-RUN_MARKER = os.environ.get("EXAMPREP_MARKER", "1").lower() in {"1", "true", "yes"}
+# It makes notes again for the topics holding those pages, so it is off unless asked for.
+RUN_MARKER = os.environ.get("EXAMPREP_MARKER", "0").lower() in {"1", "true", "yes"}
 CODE_REPO_URL = "https://github.com/meghanag-16/exam-prep-assistant"
 SECRETS = [
     "GEMINI_API_KEY",
@@ -40,7 +45,9 @@ SECRETS = [
     "BRAVE_API_KEY",  # optional
     "LANGFUSE_PUBLIC_KEY",  # optional
     "LANGFUSE_SECRET_KEY",  # optional
-    "LANGFUSE_HOST",  # optional
+    "LANGFUSE_HOST",  # optional: Langfuse server, e.g. https://jp.cloud.langfuse.com
+    "LANGFUSE_BASE_URL",  # optional: same as LANGFUSE_HOST (newer name); set one of the two
+    "LANGFUSE_TRACING_ENVIRONMENT",  # optional: e.g. kaggle
     "HF_TOKEN",
     "HF_DATASET_REPO",
 ]
@@ -93,7 +100,8 @@ def load_secrets() -> None:
     client = UserSecretsClient()
     for name in SECRETS:
         try:
-            os.environ[name] = client.get_secret(name)
+            # Quotes pasted around a value ("https://...") would break URLs and keys.
+            os.environ[name] = client.get_secret(name).strip().strip('"').strip("'")
             print(f"{name}: set")
         except Exception:
             print(f"{name}: MISSING")
@@ -145,23 +153,25 @@ def main() -> None:
     syllabus = find_syllabus(inputs)
     extra = f' --syllabus "{syllabus}"' if syllabus else ""
     # Builds decks, topics and topic names from the ledger, then uploads the topic map.
-    sh(f"examprep-topics --subject {SUBJECT} --push{extra}")
+    sh(f"examprep-topics --subject {SUBJECT} --if-changed --push{extra}")
     # Formulas, matrices and expressions as checked LaTeX. The course files are passed
     # so formula images and scanned pages can be read; finished items are never sent again.
     files = " ".join(f'"{p}"' for p in inputs)
     sh(f"examprep-formulas --subject {SUBJECT} --push {files}")
     # Chunks (per page, fixed size, per heading), embeddings and the keyword index, in an embedded Qdrant.
-    sh(f"examprep-index --subject {SUBJECT} --push")
+    # Rebuilt only when pages, topics, formulas or chunk settings changed.
+    sh(f"examprep-index --subject {SUBJECT} --if-changed --push")
     if RUN_EVAL:
         # The first time, the LLM drafts evaluation questions (kept afterwards: edit them on your laptop
         # and upload with examprep-evalset --upload). Then every search setting is measured and the best
-        # one becomes the default.
+        # one becomes the default. Skipped while the index, questions and settings are unchanged.
         sh(f"examprep-evalset --subject {SUBJECT} --push")
-        sh(f"examprep-eval --subject {SUBJECT} --save-best --push")
+        sh(f"examprep-eval --subject {SUBJECT} --save-best --if-changed --push")
     if RUN_ANSWER_EVAL:
         # Answers every evaluation question from the material only, checks the citations and refusals,
         # and answers a few with extra explanations from the trusted sites (uses Tavily credits).
-        sh(f"examprep-answer-eval --subject {SUBJECT} --push")
+        # Skipped while nothing it depends on changed (index, questions, settings, prompts).
+        sh(f"examprep-answer-eval --subject {SUBJECT} --if-changed --push")
     if RUN_NOTES:
         # Notes for every topic, with every page checked; stored notes are reused while nothing changed.
         marker = " --marker-test" if RUN_MARKER else ""

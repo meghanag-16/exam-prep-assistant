@@ -154,6 +154,12 @@ def test_build_finds_decks_topics_and_duplicates(combined_pdf: Path):
     assert (Path(build.ledger.subject_dir("os")) / "topics.yaml").exists()
     acc = analysis.boundary_accuracy(build.deck_starts_by_file("os"), {"combined_all_units.pdf": [1, 8, 15]})
     assert acc["f1"] == 1.0
+    assert build.is_current("os")  # same pages and settings: a rebuild can be skipped
+    con = build.ledger.connect("os")
+    con.execute("UPDATE pages SET hash = 'changed' WHERE id = (SELECT MIN(id) FROM pages)")
+    con.commit()
+    con.close()
+    assert not build.is_current("os")
 
 
 def test_llm_names_and_user_edits_survive_rebuild(combined_pdf: Path, monkeypatch):

@@ -26,6 +26,7 @@ import json
 import re
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -379,10 +380,12 @@ def _passages(question: str, subject: str, slides: list[str], reranker=None) -> 
     except TrustedError as e:
         return {"kept": [], "rejected": 0, "candidates": 0, "error": str(e), "provider": None}
     cands: list[WebPassage] = []
-    for res in results:
-        if not allowed(res["url"], domains):
-            continue  # checked again here, whatever the search returned
-        text = fetch_text(res["url"], domains) or res["content"]
+    results = [r for r in results if allowed(r["url"], domains)]  # checked again here, whatever the search returned
+    # Pages are downloaded at the same time, not one after another (each can take up to fetch_timeout).
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(results)))) as pool:
+        texts = list(pool.map(lambda r: fetch_text(r["url"], domains), results))
+    for res, page_text in zip(results, texts, strict=True):
+        text = page_text or res["content"]
         for part in split(text or "", int(cfg.get("passage_words", 180))):
             cands.append(WebPassage(res["url"], res["title"], site_of(res["url"]), part))
     kept, rejected = gate(question, slides, cands, reranker)

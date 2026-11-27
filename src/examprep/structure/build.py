@@ -8,6 +8,7 @@ the map is rebuilt.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -98,6 +99,33 @@ def _llm_names(items: list[dict], log: Log) -> dict[int, str]:
 
 def _update_ids(con, column: str, value, ids: list[int]) -> None:
     con.execute(f"UPDATE pages SET {column} = ? WHERE id IN ({','.join('?' * len(ids))})", (value, *ids))
+
+
+def inputs_key(con) -> str:
+    """Changes when the pages (files, order, content) or the topic settings change."""
+    h = hashlib.sha256()
+    for row in con.execute(
+        "SELECT f.name, p.page_no, IFNULL(p.hash, '') FROM pages p JOIN files f ON f.id = p.file_id ORDER BY p.id"
+    ):
+        h.update(repr(tuple(row)).encode())
+    h.update(json.dumps(config.structure(), sort_keys=True, default=str).encode())
+    return h.hexdigest()[:24]
+
+
+def is_current(subject: str) -> bool:
+    """True when the stored topic map was built from the same pages and settings."""
+    subject = ledger.safe_subject(subject)
+    try:
+        report = json.loads((ledger.subject_dir(subject) / "topics_report.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not report.get("inputs") or not topic_map(subject):
+        return False
+    con = ledger.connect(subject)
+    try:
+        return bool(report["inputs"] == inputs_key(con))
+    finally:
+        con.close()
 
 
 def build(subject: str, log: Log = print) -> dict:
@@ -334,6 +362,7 @@ def build(subject: str, log: Log = print) -> dict:
             "ignored_repeated_lines": len(boiler),
             "decks": deck_report,
             "topics": topics_out,
+            "inputs": inputs_key(con),
         }
         (ledger.subject_dir(subject) / "topics_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         export_yaml(con, ledger.subject_dir(subject) / "topics.yaml")
