@@ -23,26 +23,26 @@ llm:
     groq:
       base_url: https://api.groq.com/openai/v1/
       api_key_env: GROQ_API_KEY
-      # Free models on Groq, tried in order. Names change: `uv run examprep-check` lists the ones your key sees.
+      # Free chat models on Groq (from examprep-check, 2026-11-26), tried in order. Names change: `uv run examprep-check` lists the ones your key sees.
       models:
         - openai/gpt-oss-120b
-        - llama-3.3-70b-versatile
+        - qwen/qwen3.8-27b
         - openai/gpt-oss-20b
-        - qwen/qwen3-32b
-        - meta-llama/llama-4-scout-17b-16e-instruct
-        - llama-3.1-8b-instant
+        - allam-2-7b              # small model, last resort
       vision: false
       requests_per_minute: 30
     openrouter:
       base_url: https://openrouter.ai/api/v1/
       api_key_env: OPENROUTER_API_KEY
-      # Free (":free") models on OpenRouter, tried in order. `uv run examprep-check` lists the ones available.
+      # Free (":free") chat models on OpenRouter (from examprep-check, 2026-11-26), tried in order. `uv run examprep-check` lists the ones available.
       models:
         - google/gemma-4-31b-it:free
-        - meta-llama/llama-3.3-70b-instruct:free
-        - deepseek/deepseek-chat-v3-0324:free
-        - qwen/qwen3-235b-a22b:free
-        - mistralai/mistral-small-3.2-24b-instruct:free
+        - nvidia/nemotron-3-ultra-550b-a55b:free
+        - google/gemma-4-26b-a4b-it:free
+        - nvidia/nemotron-3.5-super-vl:free
+        - baidu/ernie-5.5-flash-preview:free
+        - inclusionai/ling-3.2-flash:free
+        - nvidia/nemotron-3.5-lightning:free
       vision: false
       requests_per_minute: 20
   timeout_seconds: 60

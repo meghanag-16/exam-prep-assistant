@@ -58,6 +58,12 @@ class PageData:
     status: str = "ok"
 
 
+def symbol_font_chars(text: str | None) -> int:
+    """How many Symbol-font characters (private-use codes, bullets left out) the text holds.
+    PDFs that set maths in the Symbol font give these instead of real maths characters."""
+    return sum(1 for ch in text or "" if 0xF020 <= ord(ch) <= 0xF0FF and ord(ch) - 0xF000 not in PUA_BULLETS)
+
+
 def formula_candidate(text: str, min_symbols: int | None = None) -> bool:
     """True when the text holds enough maths. OCR text loses most symbols, so callers
     checking scanned pages pass a lower min_symbols."""
@@ -65,7 +71,7 @@ def formula_candidate(text: str, min_symbols: int | None = None) -> bool:
     if not text:
         return False
     n_sym = sum(1 for ch in text if ch in MATH_CHARS) + len(MATH_PATTERNS.findall(text))
-    n_sym += sum(1 for ch in text if 0xF020 <= ord(ch) <= 0xF0FF and ord(ch) - 0xF000 not in PUA_BULLETS)
+    n_sym += symbol_font_chars(text)
     need = int(min_symbols if min_symbols is not None else cfg.get("min_math_symbols", 6))
     return n_sym >= need or n_sym / max(len(text), 1) >= float(cfg.get("min_math_ratio", 0.02))
 

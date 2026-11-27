@@ -466,3 +466,48 @@ def test_scanned_page_layout_from_ocr_is_stored(tmp_path: Path, monkeypatch):
     rows = con.execute("SELECT ocr_text, layout_json FROM pages").fetchall()
     con.close()
     assert all("\n" in r["ocr_text"] and json.loads(r["layout_json"]) == layout for r in rows)
+
+
+def test_notes_with_capital_headings_at_body_size(tmp_path: Path):
+    # A formula sheet: headings are bold capitals at body size, several on one page,
+    # title-case bold lines are sub-points, and some pages have no heading at all.
+    import pymupdf
+
+    para = (
+        "This line explains a rule in full words the way a formula sheet does, with enough words on "
+        "every page that the file reads as notes and not as slides. "
+    ) * 6
+    pages = [
+        ["PERCENTAGES", "PROFIT AND LOSS"],
+        ["NUMBER SYSTEM"],
+        ["HARMONIC PROGRESSION (HP)", "Angle Bisector Theorem:", "GEOMETRY"],
+        ["Circles", "Polygon"],
+        ["Triangle"],
+        ["LOGARITHM", "Standard forms:"],
+    ]
+    doc = pymupdf.open()
+    for heads in pages:
+        p = doc.new_page()
+        y = 72
+        for h in heads:
+            p.insert_text((72, y), h, fontsize=11, fontname="hebo")
+            y += 16
+            for line in range(0, len(para), 95):
+                p.insert_text((72, y), para[line : line + 95], fontsize=11)
+                y += 14
+            y += 10
+    path = tmp_path / "formula_sheet.pdf"
+    doc.save(path)
+    _ingest(path, "sheet")
+    rep = build.build("sheet", log=lambda m: None)
+    assert rep["decks"][0]["topics_from"] == "slide headings"
+    secs = [(s["heading"], s["pages"]) for t in rep["topics"] for s in t["sections"]]
+    assert secs == [
+        ("PERCENTAGES", "1-1"),
+        ("NUMBER SYSTEM", "2-2"),
+        ("HARMONIC PROGRESSION (HP)", "3-3"),
+        ("GEOMETRY", "4-5"),
+        ("LOGARITHM", "6-6"),
+    ]
+    first = next(s for t in rep["topics"] for s in t["sections"] if s["heading"] == "PERCENTAGES")
+    assert "PROFIT AND LOSS" in first["points"]  # not joined into one heading

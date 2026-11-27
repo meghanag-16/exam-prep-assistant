@@ -12,7 +12,9 @@ Works on any college's files, without knowing their template in advance:
    such as "2.3", a short title-like line, and the slide title box. A heading
    split over two lines ("DATABASES AND" / "DATABASE USERS") is joined.
 3. Each page gets its main heading; the other headings on the page are kept as
-   its points, so nothing is dropped.
+   its points, so nothing is dropped. In notes, a bigger line or a bold line in
+   capitals is a heading ("NUMBER SYSTEM"); other bold lines are points. A notes
+   page without a heading continues the last section of the page before.
 4. Cover, contents, outline and closing pages are "filler" and are attached to
    a neighbouring section, so they never become a topic.
 5. Consecutive pages with the same heading form a section ("X (cont.)" and
@@ -278,6 +280,11 @@ def heading_lines(page: Page, style: FileStyle | None, boiler: set[str]) -> list
             same = s and s2 and b == b2 and abs(s - s2) <= (0.25 if connector else tol) * max(s, s2)
             ends_open = not t.rstrip().endswith((".", ":", ";", "!", "?"))
             follows = t2[:1].isupper() or connector
+            # In notes, two bold lines at body size are two headings ("PERCENTAGES" / "PROFIT AND LOSS")
+            # unless the first one clearly runs on ("DATABASES AND" / "DATABASE USERS").
+            body_sized = style.notes and s / style.body_size < big
+            if body_sized and not connector:
+                follows = False
             if (
                 same
                 and strong(s, b)
@@ -311,6 +318,38 @@ def heading_lines(page: Page, style: FileStyle | None, boiler: set[str]) -> list
     return heads
 
 
+def caps_heading(h: Head) -> bool:
+    """A bold, unnumbered line in capitals ("NUMBER SYSTEM", "HARMONIC PROGRESSION (HP)"):
+    the section heading in notes that keep headings at body size."""
+    letters = [ch for ch in h.text if ch.isalpha()]
+    return h.bold and not h.depth and len(letters) >= 4 and all(ch.isupper() for ch in letters)
+
+
+def main_heads(heads: list[Head], style: FileStyle | None) -> list[Head]:
+    """The heading lines that can be a page's main heading (point labels left out)."""
+    main = [h for h in heads if not POINT_LABEL.match(strip_number(h.text))]
+    if style and style.notes and style.body_size:
+        # In notes, bold lines at body size are points, unless they are in capitals; a page
+        # without such a heading continues the section before it.
+        main = [h for h in main if h.size >= 1.12 * style.body_size or caps_heading(h)]
+    return main
+
+
+def last_heading(heads: list[Head], style: FileStyle | None, head: str | None) -> str | None:
+    """The last section heading on a notes page, at the same level as its main heading:
+    the section the next page continues (page 6 starts "HARMONIC PROGRESSION" and then
+    "GEOMETRY", so page 7 is still geometry). The main heading itself otherwise."""
+    first = next((h for h in heads if h.text == head), None)
+    if first is None or first.depth:
+        return head
+    same = [
+        h
+        for h in main_heads(heads, style)
+        if not h.depth and h.pos >= first.pos and round(h.size) == round(first.size) and h.bold == first.bold
+    ]
+    return max(same, key=lambda h: h.pos).text if same else head
+
+
 def headings(
     page: Page, lines: list[str], style: FileStyle | None, boiler: set[str]
 ) -> tuple[str | None, list[str], list[Head]]:
@@ -320,11 +359,7 @@ def headings(
     if page.kind == "pptx" and page.title and not _skip(page.title, boiler) and _looks_like_heading(page.title):
         head = " ".join(page.title.split())
     elif heads:
-        main = [h for h in heads if not POINT_LABEL.match(strip_number(h.text))]
-        if style and style.notes and style.body_size:
-            # In notes, bold lines at body size are points; a page without a bigger
-            # heading continues the section before it.
-            main = [h for h in main if h.size >= 1.12 * style.body_size]
+        main = main_heads(heads, style)
         numbered = [h for h in main if h.depth]
         if numbered:  # in numbered notes the numbered line is the section, unless a much bigger title exists
             top = max(h.size for h in numbered)

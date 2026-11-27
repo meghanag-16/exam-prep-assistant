@@ -19,7 +19,7 @@ An exam-preparation tool that works from your own course material. It reads ever
 | Course files | `.pdf`, `.pptx`, `.ppt`, `.txt`, `.zip` (including zips inside zips), and whole folders |
 | From slides | slide titles, body text, tables, speaker notes, images |
 | From PDFs | text with font sizes and bold, tables, images, scanned pages (with line sizes from OCR) |
-| Layouts | lecture slides, combined slide PDFs, typed notes and book-style chapters, scanned slides |
+| Layouts | lecture slides, combined slide PDFs, typed notes and book-style chapters (including formula sheets with bold capital headings), scanned slides |
 | Formulas | typed maths in PDFs (maths fonts and symbols), PowerPoint equation objects, formula images and scanned pages (read by an image model), stored as LaTeX |
 | Syllabus | `.txt`, `.pdf` or `.pptx` |
 | LLM providers | Gemini, Groq, OpenRouter (free tiers, tried in that order), each with several models: when one model's free quota runs out or it is busy, the next is used. Requests are spaced to each model's per-minute limit, and every reply is cached in `data/llm_cache.sqlite` (synced to the dataset repo), so a repeated request never calls the API again. Set `EXAMPREP_LLM_CACHE=0` to switch the cache off. |
@@ -81,7 +81,7 @@ To rename topics, edit `data/<subject>/topics.yaml` and run `uv run examprep-top
 
     uv run examprep-formulas "path\to\files_or_folder_or_zip" --subject operating_systems
 
-Page text is read from the ledger. The course files are needed only for formula images and scanned pages; without them those wait for the next run. The results go to `data/<subject>/formulas.md` (formulas needing review listed first) and `formulas_report.json`. Options: `--limit 20` sends at most 20 requests, `--captions` also writes short descriptions of diagram pages, `--retry-failed`, `--pull`, `--push`. Runs are resumable: if a quota runs out, the next run continues where it stopped and nothing done is sent again.
+Page text is read from the ledger. The course files are needed only for formula images, scanned pages and PDF pages with garbled maths text; without them images and scanned pages wait for the next run, and garbled pages are read from their text until a later run with the files replaces them. The results go to `data/<subject>/formulas.md` (formulas needing review listed first) and `formulas_report.json`. Options: `--limit 20` sends at most 20 requests, `--captions` also writes short descriptions of diagram pages, `--retry-failed`, `--pull`, `--push`. Runs are resumable: if a quota runs out, the next run continues where it stopped and nothing done is sent again.
 
 **5. Run the app**
 
@@ -105,7 +105,7 @@ To run lint and formatting automatically before each commit: `uvx pre-commit ins
 - Old slides often hold equations as WMF/EMF pictures; these are drawn with LibreOffice before OCR and formula reading, so they are read on Kaggle and in the Space, not on a laptop without LibreOffice.
 - A reply cut off by the model's output limit is asked again with fewer pages at a time; a single page whose reply is still too long is marked failed and can be retried with `--retry-failed`.
 - Formula images and scanned formula pages need a provider that accepts images (Gemini by default, `vision: true` in `config/models.yaml`). Without one they are left for a later run.
-- Formula text taken from a PDF's text layer can be garbled (symbols in private font codes); the LLM rebuilds the LaTeX from it and may get it wrong. Check formulas marked for review.
+- Formula text taken from a PDF's text layer can be garbled (symbols in private font codes, fractions split over lines). Such pages (at least `garbled_symbol_chars` of these codes, `config/formulas.yaml`) are sent as page pictures to the image model instead. Without an image model or the course file, their text is used and the LaTeX may be wrong: check formulas marked for review.
 - The LaTeX check is structural (braces, environments, known commands); it does not render the formula. Rendering with KaTeX comes with the website.
 - Formula extraction has been tested with a fake LLM only, not yet against live providers.
 - Files ingested before formula detection changed need re-reading (`--force`) so their formula pages are found.

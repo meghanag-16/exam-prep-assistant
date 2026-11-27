@@ -296,3 +296,36 @@ def test_busy_model_moves_on_and_too_large_request_is_split(monkeypatch):
 
     with pytest.raises(llm.LLMError):
         extract._ask_split(ask, [{"key": "a"}, {"key": "b"}], lambda m: None)
+
+
+def test_garbled_pdf_maths_page_is_read_as_a_picture(tmp_path: Path, monkeypatch):
+    # A PDF that sets its maths in the Symbol font gives private-use characters instead of
+    # maths symbols, and fractions fall apart: such a page is read from a picture of the page.
+    pdf = tmp_path / "maths.pdf"
+    _maths_pdf(pdf)
+    pipeline.ingest([pdf], "maths", use_ocr=False, log=lambda m: None)
+    con = ledger.connect("maths")
+    garbled = "a \uf02b b \uf03d c \uf0e6 \uf0f6 \uf0e7 \uf0f7 \uf0b1 \uf0f8 \uf0b4 \uf0b4"
+    assert parsers.symbol_font_chars(garbled) == 10 and parsers.symbol_font_chars("\uf0b7 bullet") == 0
+    con.execute("UPDATE pages SET text = text || ? WHERE page_no = 1", ("\n" + garbled,))
+    con.commit()
+    con.close()
+    seen: list = []
+    monkeypatch.setattr(llm, "available_providers", lambda: ["gemini"])
+    monkeypatch.setattr(llm, "vision_providers", lambda: ["gemini"])
+    monkeypatch.setattr(llm, "chat_json", _fake_text_reply(seen))
+
+    # Without the course file the page cannot be drawn: its text is read instead.
+    rep = extract.extract("maths", log=lambda m: None)
+    assert len(seen) == 1 and isinstance(seen[0][0][-1]["content"], str)
+    assert rep["by_kind"] == {"equation": 1, "matrix": 1, "expression": 1}
+    assert rep["still_to_do"]["page"] == 1 and rep["still_to_do"]["text"] == 0
+
+    # With the file, the page picture is read and replaces what came from the text.
+    seen.clear()
+    rep = extract.extract("maths", [pdf], log=lambda m: None)
+    assert len(seen) == 1 and isinstance(seen[0][0][-1]["content"], list)
+    rows = extract.formulas("maths")
+    assert {r["source"] for r in rows} == {"page"}  # the picture also covers the images on the page
+    assert rep["still_to_do"] == {"text": 0, "image": 0, "page": 0}
+    assert "picture of the page" in (ledger.subject_dir("maths") / "formulas.md").read_text(encoding="utf-8")

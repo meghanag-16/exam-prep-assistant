@@ -167,6 +167,20 @@ def build(subject: str, log: Log = print) -> dict:
             or (i in edge_pages and len(" ".join(lines[i]).split()) < 3 * max_words)  # cover / closing page
             for i in range(len(pages))
         ]
+        # In notes, a page without a heading continues the last section of the page before
+        # (which may not be that page's main heading when one page holds several sections).
+        sec_heads = list(heads)
+        carry: str | None = None
+        for i, p in enumerate(pages):
+            style = styles.get(p.file_id)
+            if i == 0 or pages[i - 1].file_id != p.file_id:
+                carry = None
+            if not (style and style.notes) or filler[i]:
+                continue
+            if heads[i]:
+                carry = sections.last_heading(hlines[i], style, heads[i])
+            elif carry:
+                sec_heads[i] = carry
         clean_text = ["\n".join(ln) for ln in lines]
         vectors = embed.embed(clean_text, con)
         clean_pages = [
@@ -197,7 +211,7 @@ def build(subject: str, log: Log = print) -> dict:
         deck_report = []
         for file_id, deck_no, idx, evidence in decks:
             content = [i for i in idx if not filler[i]]
-            with_head = [i for i in content if heads[i]]
+            with_head = [i for i in content if sec_heads[i]]
             title = next((heads[i] for i in idx if heads[i] and not filler[i]), None)
             cur = con.execute(
                 "INSERT INTO decks (file_id, deck_no, start_page, end_page, title, evidence) VALUES (?,?,?,?,?,?)",
@@ -206,8 +220,10 @@ def build(subject: str, log: Log = print) -> dict:
             deck_id = int(cur.lastrowid)
             _update_ids(con, "deck_id", deck_id, [pages[i].id for i in idx])
             dv = vectors[idx]
-            d_heads, d_subs, d_fill = [heads[i] for i in idx], [subs[i] for i in idx], [filler[i] for i in idx]
-            chaps, how = sections.chapters([hlines[i] for i in idx], d_heads, d_fill, styles[file_id].notes)
+            d_heads, d_subs, d_fill = [sec_heads[i] for i in idx], [subs[i] for i in idx], [filler[i] for i in idx]
+            chaps, how = sections.chapters(
+                [hlines[i] for i in idx], [heads[i] for i in idx], d_fill, styles[file_id].notes
+            )
             groups: list[tuple[list[sections.Section], str | None]] = []
             if chaps:
                 secs = sections.build_sections(d_heads, d_subs, d_fill)

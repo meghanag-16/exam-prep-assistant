@@ -21,3 +21,4 @@ captions:
 
 logo_share: 0.2               # an image on at least this share of a file's pages (and 3+ pages) is a logo: skipped
 ocr_min_math_symbols: 2       # OCR text loses most maths symbols, so scanned pages and image text need only this many maths matches
+garbled_symbol_chars: 8       # a PDF maths page with at least this many Symbol-font characters has garbled text: a picture of the page is read instead

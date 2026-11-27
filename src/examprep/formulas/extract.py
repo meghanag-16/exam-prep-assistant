@@ -8,7 +8,10 @@ Where they come from:
   PowerPoint equation objects). Their text goes to the LLM, several pages per request.
 - image: pictures of formulas on those pages (or pictures whose OCR text looks
   like maths) go to a model that reads images, several per request.
-- page: scanned pages with maths are rendered and sent as images.
+- page: scanned pages with maths, and PDF pages whose maths text came out garbled
+  (many Symbol-font characters, fractions split over lines), are rendered and sent
+  as images. Without a model that reads images, or without the original file,
+  a garbled page is read from its text instead.
 
 Every formula is checked (validate.py) and stored with its name, meaning,
 symbols and source page. Work is resumable: each page text, image or scanned
@@ -59,6 +62,11 @@ def _key(*parts: str) -> str:
     return hashlib.sha256("|".join([PROMPT_VERSION, *parts]).encode()).hexdigest()[:32]
 
 
+def base_job(job: dict) -> dict:
+    """The page fields of a job (without its kind-specific fields)."""
+    return {k: job[k] for k in ("page_id", "file_id", "page_no", "file")}
+
+
 def looks_like_maths(text: str | None, scanned: bool = False) -> bool:
     """Scanned pages and image text come from OCR, which drops most maths symbols,
     so a lower bar (formulas.yaml: ocr_min_math_symbols) is used for them."""
@@ -90,6 +98,7 @@ def plan(con) -> dict[str, list[dict]]:
     logos = _logo_images(con)
     vcfg = config.formulas().get("vision", {})
     min_px = int(vcfg.get("min_image_px", 60))
+    garbled = int(config.formulas().get("garbled_symbol_chars", 8))
     jobs: dict[str, list[dict]] = {"text": [], "image": [], "page": []}
     seen_images: set[str] = set()
     rows = con.execute(
@@ -110,6 +119,22 @@ def plan(con) -> dict[str, list[dict]]:
             key = _key("page", r["hash"] or str(r["id"]))
             if key not in done:
                 jobs["page"].append({**base, "key": key, "sha256": r["sha256"], "file_kind": r["file_kind"]})
+            continue
+        if candidate and r["file_kind"] == "pdf" and parsers.symbol_font_chars(text) >= garbled:
+            # The text layer of this page lost its maths: read a picture of the page instead.
+            key = _key("page", r["hash"] or str(r["id"]))
+            if key not in done:
+                jobs["page"].append(
+                    {
+                        **base,
+                        "key": key,
+                        "sha256": r["sha256"],
+                        "file_kind": r["file_kind"],
+                        "garbled": True,
+                        "text": text,
+                        "text_key": _key("text", r["hash"] or str(r["id"])),
+                    }
+                )
             continue
         if candidate and text.strip():
             key = _key("text", r["hash"] or str(r["id"]))
@@ -308,6 +333,9 @@ def _save(con, job: dict, source: str, found: list[dict]) -> int:
         "DELETE FROM formulas WHERE job_key = ? OR (page_id = ? AND source = ? AND IFNULL(image_hash, '') = ?)",
         (job["key"], job["page_id"], source, job.get("image_hash") or ""),
     )
+    if source == "page":
+        # A picture of the whole page replaces what was read from its (garbled) text before.
+        con.execute("DELETE FROM formulas WHERE page_id = ? AND source = 'text'", (job["page_id"],))
     n = 0
     for f in found:
         chk = validate.check(str(f.get("latex", "")))
@@ -384,6 +412,23 @@ def extract(
         )
         if not llm.available_providers():
             stopped = "No LLM API key is set (see .env.example); nothing was sent."
+        # Pictures of images and pages are made first: a garbled PDF page whose picture
+        # cannot be read (no image model or no original file) is read from its text instead.
+        vision = llm.vision_providers()
+        done_text = {r[0] for r in con.execute("SELECT key FROM formula_jobs WHERE status = 'done'")}
+        image_jobs = [("image", j) for j in todo["image"]] + [("page", j) for j in todo["page"]]
+        ready: list[tuple[str, dict, bytes]] = []
+        for source, job in image_jobs:
+            data = files.image(job) if vision else None
+            if data is not None:
+                ready.append((source, job, data))
+            elif job.get("garbled"):
+                if job["text_key"] not in done_text:
+                    todo["text"].append({**base_job(job), "key": job["text_key"], "text": job["text"]})
+            elif not vision:
+                stats["no_vision_model"] += 1
+            else:
+                stats["waiting_for_files"] += 1
         # 1. Page text, several pages per request.
         per = int(cfg.get("text", {}).get("pages_per_request", 6))
         for i in range(0, len(todo["text"]) if not stopped else 0, per):
@@ -403,19 +448,7 @@ def extract(
                     stats["sent"] += 1
             con.commit()
             log(f"  text {min(i + per, len(todo['text']))}/{len(todo['text'])}")
-        # 2. Images and scanned pages, several per request, to a model that reads images.
-        vision = llm.vision_providers()
-        image_jobs = [("image", j) for j in todo["image"]] + [("page", j) for j in todo["page"]]
-        if image_jobs and not vision and not stopped:
-            stats["no_vision_model"] = len(image_jobs)
-            image_jobs = []
-        ready: list[tuple[str, dict, bytes]] = []
-        for source, job in image_jobs:
-            data = files.image(job)
-            if data is None:
-                stats["waiting_for_files"] += 1
-            else:
-                ready.append((source, job, data))
+        # 2. Images and page pictures, several per request, to a model that reads images.
         per = int(cfg.get("vision", {}).get("images_per_request", 4))
         for i in range(0, len(ready) if not stopped else 0, per):
             batch = ready[i : i + per]
@@ -565,7 +598,7 @@ def summary(con, subject: str) -> dict:
     }
 
 
-SOURCE_LABEL = {"text": "page text", "image": "image on the page", "page": "scanned page"}
+SOURCE_LABEL = {"text": "page text", "image": "image on the page", "page": "picture of the page"}
 
 
 def export_review(con, path: Path) -> None:
