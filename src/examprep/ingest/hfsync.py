@@ -1,6 +1,7 @@
 """Sync a subject's ledger with the Hugging Face dataset repo.
 
 Layout in the dataset repo:  subjects/<subject>/ledger.sqlite plus the JSON/YAML reports,
+the search index (index/), evaluation files (eval/) and search_settings.json,
 and cache/llm_cache.sqlite (saved LLM replies, shared by all subjects)
 
 - pull: download the ledger before ingesting, so a fresh Kaggle session knows
@@ -61,7 +62,68 @@ def pull(subject: str) -> bool:
     with open(path, "rb") as f:
         ledger.db_path(subject).write_bytes(f.read())
     pull_cache()
+    pull_search(subject)
     return True
+
+
+SEARCH_FILES = ["index/**", "eval/*", "search_settings.json"]
+
+
+def pull_search(subject: str, overwrite_questions: bool = False) -> int:
+    """Download the search index, evaluation files and chosen search settings, if uploaded.
+    A local eval/questions.yaml is kept (it may hold your edits) unless overwrite_questions.
+    Returns the number of files written."""
+    import shutil
+    from pathlib import Path
+
+    from huggingface_hub import snapshot_download
+
+    repo, token = _repo_and_token()
+    remote = remote_dir(subject)
+    try:
+        root = snapshot_download(
+            repo_id=repo,
+            repo_type="dataset",
+            allow_patterns=[f"{remote}/{p}" for p in SEARCH_FILES],
+            token=token,
+            cache_dir=config.data_dir() / ".hf-cache",
+        )
+    except Exception:
+        return 0  # nothing uploaded yet, or not reachable: search can be rebuilt with examprep-index
+    src = Path(root) / remote
+    dst = ledger.subject_dir(subject)
+    written = 0
+    if (src / "index").exists():
+        shutil.rmtree(dst / "index", ignore_errors=True)
+    for f in src.rglob("*"):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(src)
+        target = dst / rel
+        if rel.as_posix() == "eval/questions.yaml" and target.exists() and not overwrite_questions:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(f, target)
+        written += 1
+    return written
+
+
+def push_questions(subject: str) -> str:
+    """Upload only eval/questions.yaml (after editing it by hand)."""
+    from huggingface_hub import HfApi
+
+    repo, token = _repo_and_token()
+    local = ledger.subject_dir(subject) / "eval" / "questions.yaml"
+    if not local.exists():
+        raise SyncError(f"{local} does not exist.")
+    HfApi(token=token).upload_file(
+        repo_id=repo,
+        repo_type="dataset",
+        path_or_fileobj=str(local),
+        path_in_repo=f"{remote_dir(subject)}/eval/questions.yaml",
+        commit_message=f"update evaluation questions for {ledger.safe_subject(subject)}",
+    )
+    return f"{repo}/{remote_dir(subject)}/eval/questions.yaml"
 
 
 def pull_cache() -> bool:
@@ -133,7 +195,9 @@ def push(subject: str, message: str | None = None) -> str:
             "syllabus_report.json",
             "formulas.md",
             "formulas_report.json",
+            *SEARCH_FILES,
         ],
+        ignore_patterns=["**/.lock", "**/*.lock"],
         commit_message=message or f"ingest {ledger.safe_subject(subject)}",
     )
     push_cache()

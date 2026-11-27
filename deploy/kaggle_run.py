@@ -21,6 +21,8 @@ import sys
 SUBJECT = os.environ.get("EXAMPREP_SUBJECT", "my_subject")  # CHANGE THIS per subject, e.g. "operating_systems"
 # True re-reads files that were already ingested (for example to redo OCR after an update).
 FORCE = os.environ.get("EXAMPREP_FORCE", "").lower() in {"1", "true", "yes"}
+# True measures search on the evaluation questions (and drafts them the first time).
+RUN_EVAL = os.environ.get("EXAMPREP_EVAL", "1").lower() in {"1", "true", "yes"}
 CODE_REPO_URL = "https://github.com/meghanag-16/exam-prep-assistant"
 SECRETS = ["GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "TAVILY_API_KEY", "HF_TOKEN", "HF_DATASET_REPO"]
 WORK = "/kaggle/working"
@@ -126,6 +128,14 @@ def main() -> None:
     # so formula images and scanned pages can be read; finished items are never sent again.
     files = " ".join(f'"{p}"' for p in inputs)
     sh(f"examprep-formulas --subject {SUBJECT} --push {files}")
+    # Chunks (per page, fixed size, per heading), embeddings and the keyword index, in an embedded Qdrant.
+    sh(f"examprep-index --subject {SUBJECT} --push")
+    if RUN_EVAL:
+        # The first time, the LLM drafts evaluation questions (kept afterwards: edit them on your laptop
+        # and upload with examprep-evalset --upload). Then every search setting is measured and the best
+        # one becomes the default.
+        sh(f"examprep-evalset --subject {SUBJECT} --push")
+        sh(f"examprep-eval --subject {SUBJECT} --save-best --push")
 
 
 if __name__ == "__main__":

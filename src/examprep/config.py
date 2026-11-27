@@ -63,6 +63,11 @@ def formulas() -> dict[str, Any]:
     return _load_yaml("formulas.yaml")
 
 
+@lru_cache
+def search() -> dict[str, Any]:
+    return _load_yaml("search.yaml")
+
+
 def secret(name: str) -> str | None:
     """Return a secret from the environment, or None if unset/blank."""
     value = os.getenv(name, "").strip()

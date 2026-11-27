@@ -6,6 +6,10 @@ through these, so the same code runs locally, on Kaggle and on the Space.
   examprep-topics --subject <name> [--syllabus FILE] [--push] [--pull] [--apply-edits] [--export]
                   [--check-boundaries FILE]
   examprep-formulas [files/folders/zips] --subject <name> [--limit N] [--captions] [--retry-failed] [--push] [--pull]
+  examprep-index --subject <name> [--methods page window heading] [--if-changed] [--push] [--pull]
+  examprep-search "question" --subject <name> [--chunking C] [--mode M] [-k 5] [--json] [--pull]
+  examprep-evalset --subject <name> [--count 50] [--outside 10] [--redo] [--download] [--upload] [--push] [--pull]
+  examprep-eval --subject <name> [--methods ...] [--modes ...] [--save-best] [--push] [--pull]
 """
 
 from __future__ import annotations
@@ -282,3 +286,174 @@ def formulas_main(argv: list[str] | None = None) -> None:
             print(f"Uploaded to {hfsync.push(subject)}")
         except hfsync.SyncError as e:
             sys.exit(str(e))
+
+
+def _pull_or_require(subject: str, pull: bool) -> None:
+    if pull:
+        try:
+            if not hfsync.pull(subject):
+                sys.exit(f"No ledger for '{subject}' on Hugging Face yet.")
+        except hfsync.SyncError as e:
+            sys.exit(str(e))
+    if not ledger.db_path(subject).exists():
+        sys.exit(f"No ledger for '{subject}' yet. Run examprep-ingest first.")
+
+
+def _push(subject: str) -> None:
+    try:
+        print(f"Uploaded to {hfsync.push(subject)}")
+    except hfsync.SyncError as e:
+        sys.exit(str(e))
+
+
+def index_main(argv: list[str] | None = None) -> None:
+    from examprep.search import index
+
+    parser = argparse.ArgumentParser(
+        prog="examprep-index",
+        description="Cut the pages into chunks (per page, fixed size with overlap, per heading) and build the "
+        "search index (keyword + embeddings in an embedded Qdrant).",
+    )
+    parser.add_argument("--subject", help="optional when only one subject exists")
+    parser.add_argument("--methods", nargs="+", choices=["page", "window", "heading"], help="default: all three")
+    parser.add_argument("--if-changed", action="store_true", help="only rebuild when pages, topics or settings changed")
+    parser.add_argument("--pull", action="store_true", help="download the latest ledger from Hugging Face first")
+    parser.add_argument("--push", action="store_true", help="upload the ledger and index to Hugging Face afterwards")
+    args = parser.parse_args(argv)
+    subject = _resolve_subject(args.subject)
+    _pull_or_require(subject, args.pull or (args.push and not ledger.db_path(subject).exists()))
+    if args.if_changed and not index.is_stale(subject):
+        print("Index is up to date.")
+    else:
+        rep = index.build(subject, args.methods)
+        print(f"\nEmbedding model: {rep['model'] or 'none (keyword-only index: install the ml extra for vectors)'}")
+        for m, v in rep["methods"].items():
+            print(f"  {m:<8} {v['chunks']} chunks, {v['avg_words']} words and {v['avg_pages']} pages per chunk")
+        print(f"Time: {rep['seconds']}s")
+    index.close()
+    if args.push:
+        _push(subject)
+
+
+def search_main(argv: list[str] | None = None) -> None:
+    from examprep.search import index, search
+
+    parser = argparse.ArgumentParser(prog="examprep-search", description="Search the course material.")
+    parser.add_argument("query", help="the question, in quotes")
+    parser.add_argument("--subject", help="optional when only one subject exists")
+    parser.add_argument("--chunking", choices=["page", "window", "heading"], help="default: best from examprep-eval")
+    parser.add_argument("--mode", choices=list(index.MODES), help="default: best from examprep-eval")
+    parser.add_argument("-k", type=int, help="number of results (default 5)")
+    parser.add_argument("--pull", action="store_true", help="download the latest ledger and index first")
+    parser.add_argument("--json", action="store_true", help="print the results as JSON")
+    args = parser.parse_args(argv)
+    subject = _resolve_subject(args.subject)
+    _pull_or_require(subject, args.pull)
+    if not index.read_meta(subject):
+        print("No search index yet: building it now.")
+        index.build(subject)
+    elif index.is_stale(subject):
+        print("Note: the material changed since the index was built; run examprep-index to update it.")
+    try:
+        out = search.search(subject, args.query, args.chunking, args.mode, args.k)
+    finally:
+        index.close()
+    if args.json:
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return
+    for n in out["notes"]:
+        print(n)
+    print(f"{out['chunking']} chunks, {out['mode']} search, {out['ms']} ms\n")
+    for i, r in enumerate(out["results"], 1):
+        score = r["rerank_score"] if r["rerank_score"] is not None else r["score"]
+        print(f"{i}. {r['where']}  (score {score})")
+        if r["topic"]:
+            print(f"   Topic: {r['topic']}")
+        print("   " + " ".join(r["text"].split())[:300])
+        print()
+    if not out["results"]:
+        print("Nothing found.")
+
+
+def evalset_main(argv: list[str] | None = None) -> None:
+    from examprep.search import evalset
+
+    parser = argparse.ArgumentParser(
+        prog="examprep-evalset",
+        description="Draft the evaluation questions (known source page, plus questions outside the material) "
+        "into data/<subject>/eval/questions.yaml for you to check and edit.",
+    )
+    parser.add_argument("--subject", help="optional when only one subject exists")
+    parser.add_argument("--count", type=int, help="questions with a source page (default 50)")
+    parser.add_argument("--outside", type=int, help="questions outside the material (default 10)")
+    parser.add_argument("--redo", action="store_true", help="write a new draft even if questions.yaml exists")
+    parser.add_argument("--download", action="store_true", help="only download questions.yaml from Hugging Face")
+    parser.add_argument("--upload", action="store_true", help="only upload your edited questions.yaml")
+    parser.add_argument("--pull", action="store_true", help="download the latest ledger from Hugging Face first")
+    parser.add_argument("--push", action="store_true", help="upload to Hugging Face afterwards")
+    args = parser.parse_args(argv)
+    subject = _resolve_subject(args.subject)
+    try:
+        if args.download:
+            n = hfsync.pull_search(subject, overwrite_questions=True)
+            p = evalset.path(subject)
+            sys.exit(f"Downloaded {p}" if p.exists() else f"No questions.yaml on Hugging Face yet ({n} files).")
+        if args.upload:
+            print(f"Uploaded {hfsync.push_questions(subject)}")
+            return
+    except hfsync.SyncError as e:
+        sys.exit(str(e))
+    _pull_or_require(subject, args.pull or (args.push and not ledger.db_path(subject).exists()))
+    if evalset.path(subject).exists() and not args.redo:
+        data = evalset.load(subject)
+        print(
+            f"{evalset.path(subject)} already has {len(data['questions'])} question(s) and "
+            f"{len(data['outside'])} outside question(s); kept (use --redo for a new draft)."
+        )
+    else:
+        try:
+            rep = evalset.generate(subject, args.count, args.outside)
+        except RuntimeError as e:
+            sys.exit(str(e))
+        print(f"\nWrote {rep['questions']} question(s) and {rep['outside']} outside question(s) to {rep['path']}")
+        print("Read them before trusting the numbers: fix or delete wrong ones, add your own.")
+    if args.push:
+        _push(subject)
+
+
+def eval_main(argv: list[str] | None = None) -> None:
+    from examprep.search import evaluate, index
+
+    parser = argparse.ArgumentParser(
+        prog="examprep-eval",
+        description="Measure recall@5 and MRR of keyword, vector, hybrid and hybrid+rerank search for each "
+        "chunking method, on data/<subject>/eval/questions.yaml.",
+    )
+    parser.add_argument("--subject", help="optional when only one subject exists")
+    parser.add_argument("--methods", nargs="+", choices=["page", "window", "heading"])
+    parser.add_argument("--modes", nargs="+", choices=list(index.MODES))
+    parser.add_argument("--save-best", action="store_true", help="make the best setting the default for search")
+    parser.add_argument("--pull", action="store_true", help="download the latest ledger, index and questions first")
+    parser.add_argument("--push", action="store_true", help="upload the report to Hugging Face afterwards")
+    args = parser.parse_args(argv)
+    subject = _resolve_subject(args.subject)
+    _pull_or_require(subject, args.pull)
+    if not index.read_meta(subject) or index.is_stale(subject):
+        print("Index missing or out of date: building it first.")
+        index.build(subject)
+    try:
+        rep = evaluate.run(subject, args.methods, args.modes, save_best=args.save_best)
+    except (FileNotFoundError, ValueError) as e:
+        sys.exit(str(e))
+    finally:
+        index.close()
+    k = rep["k"]
+    want = (rep["best"]["chunking"], rep["best"]["mode"])
+    best = next(r for r in rep["results"] if (r["chunking"], r["mode"]) == want)
+    print(
+        f"\nBest: {best['chunking']} chunks, {best['mode']} search: recall@{k} {best[f'recall@{k}']:.2f}, "
+        f"MRR {best['mrr']:.2f}" + (" (saved as the default)" if args.save_best else "")
+    )
+    print(f"Report: {ledger.subject_dir(subject) / 'eval' / 'retrieval_report.md'}")
+    if args.push:
+        _push(subject)

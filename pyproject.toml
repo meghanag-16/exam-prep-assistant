@@ -20,6 +20,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "numpy>=1.26",
     "scikit-learn>=1.4",
+    "qdrant-client>=1.12",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,10 @@ examprep-ingest = "examprep.cli:ingest_main"
 examprep-report = "examprep.cli:report_main"
 examprep-topics = "examprep.cli:topics_main"
 examprep-formulas = "examprep.cli:formulas_main"
+examprep-index = "examprep.cli:index_main"
+examprep-search = "examprep.cli:search_main"
+examprep-evalset = "examprep.cli:evalset_main"
+examprep-eval = "examprep.cli:eval_main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.6"]

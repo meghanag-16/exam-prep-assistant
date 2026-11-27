@@ -1,4 +1,4 @@
-"""FastAPI backend: health, upload/ingest and coverage. More endpoints are added as features land."""
+"""FastAPI backend: health, upload/ingest, coverage, topics, formulas and search."""
 
 from __future__ import annotations
 
@@ -73,3 +73,22 @@ def formulas(subject: str, status: str | None = None) -> list[dict]:
         raise HTTPException(404, f"no ledger for subject '{subject}'")
     rows = extract.formulas(subject)
     return [r for r in rows if not status or r["status"] == status]
+
+
+@app.get("/search/{subject}")
+def search(subject: str, q: str, chunking: str | None = None, mode: str | None = None, k: int = 5) -> dict:
+    """Search the course material: results with file, page, topic and text."""
+    from examprep.search import index
+    from examprep.search import search as searching
+
+    subject = ledger.safe_subject(subject)
+    if not ledger.db_path(subject).exists():
+        raise HTTPException(404, f"no ledger for subject '{subject}'")
+    if not index.read_meta(subject):
+        raise HTTPException(404, f"no search index for subject '{subject}' (run examprep-index)")
+    if not q.strip() or len(q) > 500:
+        raise HTTPException(400, "q must be 1 to 500 characters")
+    try:
+        return searching.search(subject, q, chunking, mode, max(1, min(k, 20)))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e

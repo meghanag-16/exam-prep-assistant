@@ -1,0 +1,35 @@
+# Settings for chunking, the search index and retrieval evaluation.
+
+chunking:
+  # Three ways of cutting the material into searchable pieces. All three are built,
+  # and examprep-eval measures which one finds the right page best.
+  #   page:    one chunk per slide or page
+  #   window:  fixed number of words with overlap, inside one topic (may span pages)
+  #   heading: one chunk per section (pages under the same heading), split when long
+  methods: [page, window, heading]
+  window_words: 220
+  window_overlap: 60
+  heading_max_words: 450
+  min_words: 5                # chunks with fewer words are skipped
+  add_context: true           # put the topic name and heading above each chunk's text
+  add_formulas: true          # put the names and LaTeX of the page's formulas into the chunk
+
+search:
+  candidates: 30              # results taken from keyword and from vector search before merging
+  rerank_top: 20              # merged results re-scored by the reranker
+  top_k: 5                    # results returned
+  # bge models search better when the question (not the passages) starts with this
+  query_prefix: "Represent this sentence for searching relevant passages: "
+  bm25_k1: 1.2
+  bm25_b: 0.75
+  # Used until examprep-eval --save-best writes data/<subject>/search_settings.json
+  default_chunking: heading
+  default_mode: hybrid_rerank # keyword | vector | hybrid | hybrid_rerank
+
+evaluation:
+  questions: 50               # questions with a known source page
+  outside: 10                 # questions whose answer is not in the material
+  pages_per_request: 10       # pages sent per LLM request when writing questions
+  min_page_words: 40          # pages with fewer words are not used for questions
+  k: 5                        # recall@k
+  mrr_depth: 10               # MRR looks this deep
