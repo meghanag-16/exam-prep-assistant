@@ -154,7 +154,7 @@ def generate(subject: str, count: int | None = None, outside: int | None = None,
             log(f"LLM unavailable ({e}); saving what was written so far.")
             break
         log(f"  questions: {len(found)}")
-    questions = []
+    questions: list[dict] = []
     for p in chosen:
         q = found.get(str(p.id))
         if not q or len(questions) >= count:
@@ -179,9 +179,9 @@ def generate(subject: str, count: int | None = None, outside: int | None = None,
             ]
         except llm.LLMError as e:
             log(f"LLM unavailable for outside questions ({e}).")
-    p = path(subject)
-    if p.exists():
-        p.replace(p.with_name("questions.old.yaml"))
+    qpath = path(subject)
+    if qpath.exists():
+        qpath.replace(qpath.with_name("questions.old.yaml"))
     save(subject, {"questions": questions, "outside": outside_qs})
     return {"questions": len(questions), "outside": len(outside_qs), "path": str(path(subject))}
 

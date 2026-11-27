@@ -27,6 +27,11 @@ search:
   # replaces it with the threshold measured on the subject's own questions. This starting
   # value is a rough guess for bge-reranker-base scores (0 to 1); null shows all results.
   min_rerank_score: 0.01
+  # Results scoring below this share of the best result's reranker score are not shown
+  # (they share words with the question but explain something else). examprep-eval
+  # --save-best replaces it with the share measured on the subject's own questions.
+  min_relative_score: 0.5
+  relative_cut_max: 0.8        # a measured share is never above this: results close to the best are always shown
   # Used until examprep-eval --save-best writes data/<subject>/search_settings.json
   default_chunking: heading
   default_mode: hybrid_rerank # keyword | vector | hybrid | hybrid_rerank

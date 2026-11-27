@@ -283,7 +283,8 @@ def parse_txt(path: Path) -> list[PageData]:
     text = read_text(path)
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     sections: list[tuple[str | None, list[str]]] = []
-    cur_title, cur, cur_len = None, [], 0
+    cur: list[str] = []
+    cur_title, cur_len = None, 0
     for para in paragraphs:
         first = para.split("\n", 1)[0].strip()
         is_heading = bool(HEADING.match(first)) and len(first) <= 80

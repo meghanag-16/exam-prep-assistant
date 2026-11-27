@@ -28,6 +28,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from examprep import config, llm
 from examprep.formulas import store, validate
@@ -183,7 +184,7 @@ def _max_tokens() -> int:
     return int(config.formulas().get("max_output_tokens", 16384))
 
 
-def _ask_split(ask, batch: list, log: Log) -> tuple[dict[str, list[dict]], list[tuple[object, str]]]:
+def _ask_split(ask, batch: list, log: Log) -> tuple[dict[str, list[dict]], list[tuple[Any, str]]]:
     """Ask for a batch; when the reply is too long, ask for each half separately.
     Returns (formulas by id, [(item, error)] for single items whose reply was still too long)."""
     try:
@@ -432,7 +433,7 @@ def extract(
         # 1. Page text, several pages per request.
         per = int(cfg.get("text", {}).get("pages_per_request", 6))
         for i in range(0, len(todo["text"]) if not stopped else 0, per):
-            batch = todo["text"][i : i + per]
+            batch: list[Any] = todo["text"][i : i + per]
             try:
                 found, too_long = _ask_split(_ask_text, batch, log)
             except llm.LLMError as e:

@@ -112,7 +112,7 @@ def _boilerplate_signatures(pages: list[Page]) -> list[frozenset[str]]:
     def norm(t: str) -> str:
         return re.sub(r"\d+", "#", t.strip().lower())
 
-    counts = Counter()
+    counts: Counter[str] = Counter()
     per_page = []
     for p in pages:
         lines = {norm(str(x[0])) for x in p.layout if 3 <= len(str(x[0]).strip()) <= 80}
@@ -147,7 +147,8 @@ def deck_starts(pages: list[Page], vectors: np.ndarray, file_median: float | Non
         ):
             score += w["title_slide"]
             reasons.append("title slide")
-        if nums[i] is not None and (nums[i] == 1 or (nums[i - 1] is not None and nums[i] < nums[i - 1])):
+        num, prev_num = nums[i], nums[i - 1]
+        if num is not None and (num == 1 or (prev_num is not None and num < prev_num)):
             score += w["number_restart"]
             reasons.append(f"slide number restarts ({nums[i - 1]} -> {nums[i]})")
         nxt = sigs[i + 1] if i + 1 < n else None

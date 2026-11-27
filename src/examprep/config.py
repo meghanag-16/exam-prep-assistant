@@ -20,7 +20,12 @@ SECRET_ENV_VARS = (
     "GEMINI_API_KEY",
     "GROQ_API_KEY",
     "OPENROUTER_API_KEY",
+    "NVIDIA_API_KEY",
     "TAVILY_API_KEY",
+    "EXA_API_KEY",
+    "BRAVE_API_KEY",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
     "HF_TOKEN",
 )
 
@@ -66,6 +71,16 @@ def formulas() -> dict[str, Any]:
 @lru_cache
 def search() -> dict[str, Any]:
     return _load_yaml("search.yaml")
+
+
+@lru_cache
+def answer() -> dict[str, Any]:
+    return _load_yaml("answer.yaml")
+
+
+@lru_cache
+def answer_examples() -> dict[Any, Any]:
+    return _load_yaml("answer_examples.yaml")
 
 
 def secret(name: str) -> str | None:

@@ -43,7 +43,7 @@ def ppt_to_pptx(src: Path, out_dir: Path) -> Path:
     if converter == "libreoffice":
         exe = shutil.which("soffice") or shutil.which("libreoffice")
         subprocess.run(
-            [exe, "--headless", "--convert-to", "pptx", "--outdir", str(out_dir), str(src)],
+            [str(exe), "--headless", "--convert-to", "pptx", "--outdir", str(out_dir), str(src)],
             check=True,
             capture_output=True,
             timeout=300,

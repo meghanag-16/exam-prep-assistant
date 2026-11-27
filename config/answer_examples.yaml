@@ -1,0 +1,44 @@
+# Example answers shown to the model for each mark level: they set the shape, length
+# and citation style, not the content. Read them, edit them or replace them with your
+# own (any subject works). [S1], [S2] stand for the passages given with the question.
+# A mark level without its own example uses the nearest one (4 uses 5, 8 uses 10).
+
+2: |
+  **Cache memory** is a small, fast memory between the processor and main memory that keeps copies of recently used data [S1].
+  - It reduces the average time to reach memory because most requests are served from it [S1].
+  - A request found in the cache is a hit; one that is not is a miss [S2].
+
+5: |
+  **Pipelining** splits instruction execution into stages so that several instructions are processed at the same time, each in a different stage [S1].
+
+  - **Stages:** a classic pipeline has fetch, decode, execute, memory access and write back [S1].
+  - **Throughput:** once the pipeline is full, one instruction finishes every cycle, although each instruction still takes several cycles [S2].
+  - **Hazards:** structural, data and control hazards can stall the pipeline [S2].
+  - **Remedies:** forwarding removes many data stalls, and branch prediction reduces control stalls [S3].
+
+  **Example:** with five stages, ten instructions take 14 cycles instead of 50 [S2].
+
+10: |
+  ## Introduction
+  One or two sentences that define the concept, with a citation [S1].
+
+  ## Explanation
+  Four to six points, each one or two sentences with its citation [S2]. Use sub-points for steps or parts [S3].
+
+  ## Diagram
+  A short description of the diagram a student would draw, with what each part shows [S2].
+
+  ## Example
+  A worked example from the passages [S4].
+
+  ## Advantages and disadvantages
+  - Advantage, with a citation [S3].
+  - Disadvantage, with a citation [S3].
+
+  ## Conclusion
+  One sentence that sums up why the concept matters [S1].
+
+15: |
+  The same shape as a 10-mark answer, with a subheading for each main point, a worked
+  example, and a comparison table when two or more methods are discussed. Every row and
+  every point carries its citation [S1].

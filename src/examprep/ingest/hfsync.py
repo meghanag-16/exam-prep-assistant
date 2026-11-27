@@ -2,7 +2,8 @@
 
 Layout in the dataset repo:  subjects/<subject>/ledger.sqlite plus the JSON/YAML reports,
 the search index (index/), evaluation files (eval/) and search_settings.json,
-and cache/llm_cache.sqlite (saved LLM replies, shared by all subjects)
+notes/ (notes, revision sheets and their reports), and cache/llm_cache.sqlite and
+cache/web_cache.sqlite (saved LLM replies and trusted-site pages, shared by all subjects)
 
 - pull: download the ledger before ingesting, so a fresh Kaggle session knows
   what was already processed and skips it.
@@ -30,6 +31,7 @@ def _repo_and_token() -> tuple[str, str]:
 
 
 CACHE_FILE = "cache/llm_cache.sqlite"
+WEB_CACHE_FILE = "cache/web_cache.sqlite"
 
 
 def remote_dir(subject: str) -> str:
@@ -62,11 +64,12 @@ def pull(subject: str) -> bool:
     with open(path, "rb") as f:
         ledger.db_path(subject).write_bytes(f.read())
     pull_cache()
+    pull_web_cache()
     pull_search(subject)
     return True
 
 
-SEARCH_FILES = ["index/**", "eval/*", "search_settings.json"]
+SEARCH_FILES = ["index/**", "eval/*", "search_settings.json", "notes/*"]
 
 
 def pull_search(subject: str, overwrite_questions: bool = False) -> int:
@@ -159,21 +162,59 @@ def pull_cache() -> bool:
     return True
 
 
+def pull_web_cache() -> bool:
+    """Merge the saved trusted-site searches and pages from the dataset repo into the local cache."""
+    import sqlite3
+
+    from huggingface_hub import hf_hub_download
+
+    from examprep.answer import trusted
+
+    repo, token = _repo_and_token()
+    try:
+        path = hf_hub_download(
+            repo_id=repo,
+            repo_type="dataset",
+            filename=WEB_CACHE_FILE,
+            token=token,
+            cache_dir=config.data_dir() / ".hf-cache",
+        )
+    except Exception:
+        return False
+    try:
+        trusted._db().close()
+        con = sqlite3.connect(trusted.cache_path(), timeout=30)
+        try:
+            con.execute("ATTACH DATABASE ? AS remote", (str(path),))
+            con.execute("INSERT OR IGNORE INTO searches SELECT key, query, results, created FROM remote.searches")
+            con.execute("INSERT OR IGNORE INTO pages SELECT url, text, created FROM remote.pages")
+            con.commit()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return False
+    return True
+
+
 def push_cache() -> None:
     from huggingface_hub import HfApi
 
     from examprep import llm
+    from examprep.answer import trusted
 
-    if not llm.cache_path().exists():
-        return
     repo, token = _repo_and_token()
-    HfApi(token=token).upload_file(
-        repo_id=repo,
-        repo_type="dataset",
-        path_or_fileobj=str(llm.cache_path()),
-        path_in_repo=CACHE_FILE,
-        commit_message="update LLM reply cache",
-    )
+    for local, remote, what in (
+        (llm.cache_path(), CACHE_FILE, "LLM reply cache"),
+        (trusted.cache_path(), WEB_CACHE_FILE, "trusted-site cache"),
+    ):
+        if local.exists():
+            HfApi(token=token).upload_file(
+                repo_id=repo,
+                repo_type="dataset",
+                path_or_fileobj=str(local),
+                path_in_repo=remote,
+                commit_message=f"update {what}",
+            )
 
 
 def push(subject: str, message: str | None = None) -> str:

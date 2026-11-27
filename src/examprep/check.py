@@ -6,6 +6,7 @@ Never prints secret values, only whether they are set and whether they work.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 
@@ -33,6 +34,8 @@ def _model_ids(payload: dict) -> set[str]:
 def check_llm_provider(name: str, cfg: dict, timeout: float) -> tuple[str, str]:
     key = config.secret(cfg["api_key_env"])
     if not key:
+        if cfg.get("optional"):
+            return WARN, f"{cfg['api_key_env']} is not set (optional provider, skipped)"
         return FAIL, f"{cfg['api_key_env']} is not set"
     url = cfg["base_url"].rstrip("/") + "/models"
     try:
@@ -51,6 +54,12 @@ def check_llm_provider(name: str, cfg: dict, timeout: float) -> tuple[str, str]:
     raw = sorted(i for i in ids if not i.startswith("models/"))
     if name == "openrouter":
         raw = [i for i in raw if i.endswith(":free")]
+    # Names that look like the missing ones first ("gemma-..." for a missing gemma model),
+    # so they are not cut off by the 25-name limit.
+    stems = {re.split(r"[-/:.]", m.split("/")[-1])[0].lower() for m in missing}
+    raw = [i for i in raw if any(st in i.lower() for st in stems)] + [
+        i for i in raw if not any(st in i.lower() for st in stems)
+    ]
     shown = ", ".join(raw[:25]) + (" ..." if len(raw) > 25 else "")
     return WARN, (
         f"key works, but model(s) {', '.join(missing)} were not in the provider's list. "
@@ -105,6 +114,33 @@ def check_tavily(live: bool, timeout: float) -> tuple[str, str]:
     return FAIL, f"HTTP {r.status_code} from Tavily"
 
 
+def check_optional() -> list[tuple[str, str, str]]:
+    """Optional services and packages: missing ones are reported, not failures."""
+    rows = [
+        (
+            ("Exa search", OK, "key is set (used when Tavily fails or finds nothing)")
+            if config.secret("EXA_API_KEY")
+            else ("Exa search", INFO, "EXA_API_KEY not set: Tavily, then DuckDuckGo (no key) are used")
+        ),
+        (
+            ("Langfuse tracing", OK, "keys are set")
+            if config.secret("LANGFUSE_PUBLIC_KEY") and config.secret("LANGFUSE_SECRET_KEY")
+            else ("Langfuse tracing", INFO, "LANGFUSE keys not set: tracing is off")
+        ),
+    ]
+    for label, module, where in (
+        ("bge models", "sentence_transformers", "extra ml: installed on Kaggle and the Space"),
+        ("RAGAS", "ragas", "extra eval: installed on Kaggle"),
+        ("WeasyPrint", "weasyprint", "extra pdf: installed on Kaggle and the Space"),
+    ):
+        try:
+            __import__(module)
+            rows.append((label, OK, "installed"))
+        except Exception:  # WeasyPrint raises OSError when Pango is missing
+            rows.append((label, INFO, f"not installed here ({where})"))
+    return rows
+
+
 def check_tools() -> list[tuple[str, str, str]]:
     rows = []
     rows.append(
@@ -128,6 +164,7 @@ def run(live: bool = False) -> int:
         rows.append((f"LLM: {name}", *check_llm_provider(name, cfg, timeout)))
     rows.append(("Tavily search", *check_tavily(live, timeout)))
     rows += check_hf(timeout)
+    rows += check_optional()
     rows += check_tools()
 
     width = max(len(r[0]) for r in rows)

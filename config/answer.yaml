@@ -1,0 +1,55 @@
+# Grounded answers, notes and quick revision.
+
+answer:
+  default_marks: 5
+  # Passages given to the model for each mark level (after the search cuts in
+  # config/search.yaml, so weak matches are already left out).
+  passages: {2: 3, 4: 4, 5: 5, 6: 6, 7: 6, 8: 7, 10: 8, 15: 10}
+  # Regenerations when a check fails (bad citation, uncited point, too generic, wrong length).
+  max_attempts: 2
+  # Anti-generic check: this share of the key terms of the cited passages must appear in the answer.
+  key_terms: 10
+  min_term_share: 0.3
+  # Lines shorter than this (headings, labels) need no citation.
+  min_line_words: 6
+  # A length check only catches answers far outside the word budget in exam_pattern.yaml.
+  length_tolerance: 0.5
+  # Self-check pass (compare the draft with the passages, remove contradictions and filler):
+  # always | deeper (only with extra explanations) | never
+  self_check: deeper
+  # Repeated questions are answered from the ledger while the index and settings are unchanged.
+  cache: true
+  # When your slides do not cover a question, the answer says so and then answers from outside:
+  #   trusted_then_general: trusted-site passages, or else the model's general knowledge (labelled)
+  #   trusted: trusted-site passages only (otherwise just "not in your slides")
+  #   none: only "not in your slides"
+  outside_answer: trusted_then_general
+  # With a syllabus loaded (examprep-topics --syllabus), every answer says when the question
+  # is not in the syllabus.
+  syllabus_check: true
+  syllabus_candidates: 12   # closest syllabus points shown to the model for the check
+
+trusted:
+  # "Beyond your slides" passages from the sites in trusted_sites.yaml (Tavily search).
+  max_results: 5          # search results per question
+  max_passages: 4         # passages that pass the relevance gate and go to the model
+  passage_words: 180
+  fetch_timeout: 15
+  cache_days: 30
+
+notes:
+  batch_pages: 4          # pages per notes request (3 to 5 keeps each page in focus)
+  max_retries: 2          # extra requests for pages left uncovered or too thin
+  page_terms: 5           # key terms checked per page
+  min_term_share: 0.4     # share of a page's key terms its notes must contain
+  marker_facts: 20        # facts planted by the coverage marker test
+
+revision:
+  keywords: 12
+  short_points: 10
+
+evaluation:
+  max_questions: 50       # in-material questions answered (the outside ones are always all used)
+  deeper_questions: 5     # questions also answered with extra explanations (uses search credits)
+  ragas_questions: 20     # answers scored with RAGAS (about 6 judge calls each); 0 turns it off
+  ragas_provider:         # judge model provider from models.yaml; empty = first one with a key

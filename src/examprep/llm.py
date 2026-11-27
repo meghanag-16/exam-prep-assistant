@@ -20,11 +20,13 @@ import os
 import re
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
 
-from examprep import config
+from examprep import config, tracing
 
 
 class LLMError(RuntimeError):
@@ -129,6 +131,35 @@ def cache_forget(messages: list[dict], json_mode: bool) -> None:
         pass
 
 
+# ------------------------------------------------------------ token use
+# track_usage() collects the calls, cache hits and tokens of everything sent inside it,
+# so an answer can report how many tokens it cost (providers return "usage" with each reply).
+_trackers: list[dict] = []
+_last_usage: dict = {}
+
+
+@contextmanager
+def track_usage() -> Iterator[dict]:
+    rec = {"calls": 0, "cached": 0, "prompt_tokens": 0, "completion_tokens": 0, "models": []}
+    _trackers.append(rec)
+    try:
+        yield rec
+    finally:
+        _trackers.remove(rec)
+
+
+def _count(cached: bool, model: str | None = None) -> None:
+    for rec in _trackers:
+        if cached:
+            rec["cached"] += 1
+            continue
+        rec["calls"] += 1
+        rec["prompt_tokens"] += int(_last_usage.get("prompt_tokens") or 0)
+        rec["completion_tokens"] += int(_last_usage.get("completion_tokens") or 0)
+        if model and model not in rec["models"]:
+            rec["models"].append(model)
+
+
 # ------------------------------------------------------------ pacing
 # Free tiers limit requests per minute per model. Waiting the right gap between
 # requests (requests_per_minute in models.yaml) avoids most HTTP 429 replies.
@@ -171,9 +202,11 @@ def chat(
     json_mode: bool = False,
     providers: list[str] | None = None,
     models: list[str] | None = None,
+    trace_name: str = "call-llm",
 ) -> str:
     """Send a chat request, falling back across providers. Returns the reply text.
-    `models` limits the models tried (used with a single provider)."""
+    `models` limits the models tried (used with a single provider). `trace_name` names the
+    generation in the trace by what it is for (write-answer, judge-syllabus ...)."""
     cfg = config.models()["llm"]
     timeout = float(cfg.get("timeout_seconds", 60))
     retries = int(cfg.get("max_retries", 2))
@@ -182,6 +215,11 @@ def chat(
     if key:
         cached = _cache_get(key)
         if cached is not None:
+            _count(cached=True)
+            with tracing.observe(
+                trace_name, as_type="generation", input=messages, metadata={"cache_hit": True, "json_mode": json_mode}
+            ) as gen:
+                tracing.update(gen, output=cached, usage_details={"input": 0, "output": 0})
             return cached
     errors = []
     for name in providers if providers is not None else available_providers():
@@ -196,8 +234,29 @@ def chat(
             body = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
             if json_mode:
                 body["response_format"] = {"type": "json_object"}
-            outcome = _send(name, model, p, body, headers, timeout, retries, rest, errors)
+            with tracing.observe(
+                trace_name,
+                as_type="generation",
+                input=messages,
+                model=model,
+                model_parameters={"temperature": temperature, "max_tokens": max_tokens, "json_mode": json_mode},
+                metadata={"provider": name, "cache_hit": False},
+            ) as gen:
+                outcome = _send(name, model, p, body, headers, timeout, retries, rest, errors)
+                tracing.update(
+                    gen,
+                    output=outcome,
+                    usage_details={
+                        "input": int(_last_usage.get("prompt_tokens") or 0),
+                        "output": int(_last_usage.get("completion_tokens") or 0),
+                    }
+                    if outcome is not None
+                    else None,
+                    level="DEFAULT" if outcome is not None else "WARNING",
+                    status_message=None if outcome is not None else errors[-1][:200],
+                )
             if outcome is not None:
+                _count(cached=False, model=f"{name}/{model}")
                 if key:
                     _cache_put(key, outcome, f"{name}/{model}")
                 return outcome
@@ -221,8 +280,12 @@ def _send(name, model, p, body, headers, timeout, retries, rest, errors) -> str 
             return None
         if r.status_code == 200:
             try:
-                choice = r.json()["choices"][0]
+                data = r.json()
+                choice = data["choices"][0]
                 content = choice["message"]["content"] or ""
+                usage = data.get("usage")
+                _last_usage.clear()
+                _last_usage.update(usage if isinstance(usage, dict) else {})
             except (KeyError, IndexError, ValueError, TypeError):
                 errors.append(f"{name}/{model}: unexpected response shape")
                 return None
@@ -266,6 +329,7 @@ def chat_json(
     max_tokens: int = 4096,
     providers: list[str] | None = None,
     raise_cut_off: bool = False,
+    trace_name: str = "call-llm",
 ):
     """Like chat(), but the reply must be valid JSON. A model whose reply is not
     JSON (or is cut off) is skipped and the next model, then the next provider, is
@@ -278,7 +342,15 @@ def chat_json(
     for name in providers if providers is not None else available_providers():
         for model in provider_models(cfg[name]):
             try:
-                reply = chat(messages, temperature, max_tokens, json_mode=True, providers=[name], models=[model])
+                reply = chat(
+                    messages,
+                    temperature,
+                    max_tokens,
+                    json_mode=True,
+                    providers=[name],
+                    models=[model],
+                    trace_name=trace_name,
+                )
             except ReplyCutOff as e:
                 if raise_cut_off:
                     raise

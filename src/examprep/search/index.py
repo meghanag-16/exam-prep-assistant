@@ -33,6 +33,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -41,7 +42,7 @@ from examprep.ingest import ledger
 from examprep.search import chunks as chunking
 
 MODES = ("keyword", "vector", "hybrid", "hybrid_rerank")
-_CLIENTS: dict[str, object] = {}
+_CLIENTS: dict[str, Any] = {}
 
 # scikit-learn's English stop words (BSD licence), copied here so that a search does not
 # have to import scikit-learn, which takes a second or more on a laptop.
@@ -163,7 +164,7 @@ def cached_vectors(enc: Encoder, texts: list[str], con: sqlite3.Connection) -> n
     return np.vstack([have[k] for k in keys])
 
 
-_RERANKER: dict[str, object] = {}
+_RERANKER: dict[str, Any] = {}
 
 
 def reranker() -> Callable[[str, list[str]], list[float]] | None:

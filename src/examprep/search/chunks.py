@@ -192,8 +192,8 @@ def _sections(con: sqlite3.Connection, pages: list[PageInfo], max_words: int) ->
     out: list[Chunk] = []
     used: set[int] = set()
     for r in rows:
-        members = [by_file.get(r["file_id"], {}).get(n) for n in range(r["start_page"], r["end_page"] + 1)]
-        members = [p for p in members if p and not p.skip and p.id not in used]
+        found = [by_file.get(r["file_id"], {}).get(n) for n in range(r["start_page"], r["end_page"] + 1)]
+        members = [p for p in found if p and not p.skip and p.id not in used]
         cur: list[PageInfo] = []
         for p in members:
             used.add(p.id)
@@ -247,6 +247,6 @@ def save(con: sqlite3.Connection, method: str, chunks: list[Chunk]) -> list[int]
             "INSERT INTO chunks (method, text, page_ids, topic_id, heading, formula_ids, words) VALUES (?,?,?,?,?,?,?)",
             (c.method, c.text, json.dumps(c.page_ids), c.topic_id, c.heading, json.dumps(c.formula_ids), c.words),
         )
-        ids.append(int(cur.lastrowid))
+        ids.append(int(cur.lastrowid or 0))
     con.commit()
     return ids

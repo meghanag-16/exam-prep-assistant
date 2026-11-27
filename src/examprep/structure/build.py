@@ -135,6 +135,7 @@ def build(subject: str, log: Log = print) -> dict:
         for file_id, idxs in files.items():
             fpages = [pages[i] for i in idxs]
             if fpages[0].kind == "pdf" and not styles[file_id].notes:
+                assert raw_vectors is not None  # set whenever there is a PDF page
                 starts, evidence = analysis.deck_starts(fpages, raw_vectors[idxs], medians.get(file_id))
                 # A page whose heading is numbered 2.4, 2.4.2 ... continues a chapter: not a new deck.
                 keep = [
@@ -209,15 +210,15 @@ def build(subject: str, log: Log = print) -> dict:
         min_pages, max_pages = int(tcfg["min_pages"]), int(tcfg["max_pages"])
         topic_rows = []  # (deck_id, file_id, [page idx], [Section], deck idx, chapter title)
         deck_report = []
-        for file_id, deck_no, idx, evidence in decks:
+        for file_id, deck_no, idx, deck_evidence in decks:
             content = [i for i in idx if not filler[i]]
             with_head = [i for i in content if sec_heads[i]]
             title = next((heads[i] for i in idx if heads[i] and not filler[i]), None)
             cur = con.execute(
                 "INSERT INTO decks (file_id, deck_no, start_page, end_page, title, evidence) VALUES (?,?,?,?,?,?)",
-                (file_id, deck_no, pages[idx[0]].page_no, pages[idx[-1]].page_no, title, json.dumps(evidence)),
+                (file_id, deck_no, pages[idx[0]].page_no, pages[idx[-1]].page_no, title, json.dumps(deck_evidence)),
             )
-            deck_id = int(cur.lastrowid)
+            deck_id = int(cur.lastrowid or 0)
             _update_ids(con, "deck_id", deck_id, [pages[i].id for i in idx])
             dv = vectors[idx]
             d_heads, d_subs, d_fill = [sec_heads[i] for i in idx], [subs[i] for i in idx], [filler[i] for i in idx]
@@ -256,7 +257,7 @@ def build(subject: str, log: Log = print) -> dict:
                     "deck": deck_no,
                     "pages": f"{pages[idx[0]].page_no}-{pages[idx[-1]].page_no}",
                     "title": title,
-                    "why": evidence["reasons"],
+                    "why": deck_evidence["reasons"],
                     "topics_from": how,
                 }
             )
@@ -301,7 +302,7 @@ def build(subject: str, log: Log = print) -> dict:
                 " VALUES (?,?,?,?,?,?,?,?)",
                 (deck_id, file_id, n + 1, name, source, sp, ep, json.dumps(kws[n])),
             )
-            tid = int(cur.lastrowid)
+            tid = int(cur.lastrowid or 0)
             _update_ids(con, "topic_id", tid, [pages[i].id for i in tidx])
             sec_out = []
             for s in secs:
@@ -520,7 +521,7 @@ def map_syllabus(subject: str, syllabus: Path, log: Log = print) -> dict:
             "similarity_method": backend,
             "threshold": threshold,
             "points": len(out),
-            "covered": sum(o["covered"] for o in out),
+            "covered": sum(1 for o in out if o["covered"]),
             "items": out,
         }
         (ledger.subject_dir(subject) / "syllabus_report.json").write_text(

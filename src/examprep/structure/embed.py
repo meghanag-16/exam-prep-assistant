@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from typing import Any
 
 import numpy as np
 
@@ -41,7 +42,7 @@ def _normalize(m: np.ndarray) -> np.ndarray:
     return m / norms
 
 
-_MODEL_CACHE: dict[str, object] = {}
+_MODEL_CACHE: dict[str, Any] = {}
 
 
 def _st_embed(texts: list[str], con: sqlite3.Connection | None) -> np.ndarray:

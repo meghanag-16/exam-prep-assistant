@@ -1,18 +1,31 @@
 # Marks-based answer templates. Edit to match your university's pattern.
+# A question asked for a mark level not listed here uses the nearest one.
 marks:
   2:
     word_budget: [40, 70]
     structure: [definition, 2-3 key points]
+  4:
+    word_budget: [100, 150]
+    structure: [definition, 3-4 key points, one-line example]
   5:
     word_budget: [150, 250]
     structure: [short intro, 4-6 points, example]
+  6:
+    word_budget: [200, 300]
+    structure: [short intro, 5-6 points, example, one-line conclusion]
+  7:
+    word_budget: [250, 350]
+    structure: [intro, 5-7 points, diagram description if relevant, example, conclusion]
+  8:
+    word_budget: [300, 450]
+    structure: [intro, detailed points, diagram description if relevant, example, advantages and disadvantages, conclusion]
   10:
     word_budget: [400, 600]
     structure: [intro, detailed points, diagram description, example, advantages and disadvantages, conclusion]
-  16:
-    word_budget: [700, 1000]
+  15:
+    word_budget: [650, 900]
     structure: [intro, detailed points with subheadings, diagram description, worked example, advantages and disadvantages, comparison table if relevant, conclusion]
 
 practice_paper:
   part_a: {questions: 10, marks_each: 2}
-  part_b: {questions: 5, marks_each: 16, internal_choice: true}
+  part_b: {questions: 5, marks_each: 15, internal_choice: true}

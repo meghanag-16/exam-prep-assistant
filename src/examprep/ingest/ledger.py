@@ -109,7 +109,7 @@ def replace_file(con: sqlite3.Connection, src, status: str, pages: int, error: s
         " VALUES (?,?,?,?,?,?,?,?,?,?)",
         (src.sha256, src.name, src.kind, src.size, pages, status, error, src.note, round(seconds, 2), now()),
     )
-    return int(cur.lastrowid)
+    return int(cur.lastrowid or 0)
 
 
 def insert_page(con: sqlite3.Connection, file_id: int, page) -> int:
@@ -132,7 +132,7 @@ def insert_page(con: sqlite3.Connection, file_id: int, page) -> int:
             page.status,
         ),
     )
-    page_id = int(cur.lastrowid)
+    page_id = int(cur.lastrowid or 0)
     for img in page.images:
         con.execute(
             "INSERT OR IGNORE INTO images (hash, width, height, status) VALUES (?,?,?, 'pending')",

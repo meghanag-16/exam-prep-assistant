@@ -21,6 +21,11 @@ dependencies = [
     "numpy>=1.26",
     "scikit-learn>=1.4",
     "qdrant-client>=1.12",
+    "langgraph>=0.2",
+    "trafilatura>=1.12",
+    "sympy>=1.12",
+    "langfuse>=5.2",
+    "ddgs>=9.16",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +34,11 @@ windows-ppt = ["pywin32>=306; sys_platform == 'win32'"]
 # Better similarity with a sentence-embedding model. Installed on Kaggle and the
 # Space; not needed on the laptop (a lightweight TF-IDF method is used there).
 ml = ["sentence-transformers>=3.0"]
+# Answer evaluation with RAGAS (faithfulness, groundedness, context relevance). Installed on
+# Kaggle; it brings LangChain packages with it, used by RAGAS only.
+eval = ["ragas>=0.4"]
+# Nicer PDF exports with WeasyPrint (needs the Pango library: Kaggle and the Space image have it).
+pdf = ["weasyprint>=62"]
 
 [project.scripts]
 examprep-check = "examprep.check:main"
@@ -40,9 +50,13 @@ examprep-index = "examprep.cli:index_main"
 examprep-search = "examprep.cli:search_main"
 examprep-evalset = "examprep.cli:evalset_main"
 examprep-eval = "examprep.cli:eval_main"
+examprep-ask = "examprep.cli:ask_main"
+examprep-answer-eval = "examprep.cli:answer_eval_main"
+examprep-notes = "examprep.cli:notes_main"
+examprep-revise = "examprep.cli:revise_main"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.11", "types-pyyaml"]
 
 [build-system]
 requires = ["hatchling"]
@@ -53,6 +67,13 @@ packages = ["src/examprep"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
 
 [tool.ruff]
 line-length = 120

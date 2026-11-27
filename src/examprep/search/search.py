@@ -12,7 +12,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 
-from examprep import config
+from examprep import config, tracing
 from examprep.ingest import ledger
 from examprep.search import chunks as chunking
 from examprep.search import index
@@ -59,7 +59,9 @@ class Hit:
 
 def _ranges(nums: list[int]) -> str:
     """[4, 5, 6, 9] -> "4-6, 9"."""
-    out, start, prev = [], None, None
+    out: list[str] = []
+    start: int | None = None
+    prev = 0
     for n in sorted(set(nums)):
         if start is None:
             start = prev = n
@@ -153,6 +155,21 @@ def min_rerank_score(subject: str) -> float | None:
     return None if value is None else float(value)
 
 
+def relative_cut(subject: str) -> float | None:
+    """Results whose reranker score is below this share of the best result's score are
+    dropped (they share words with the question but answer something else): the value
+    examprep-eval measured for this subject, else config/search.yaml min_relative_score."""
+    cfg = config.search()["search"]
+    p = settings_path(subject)
+    if p.exists():
+        saved = json.loads(p.read_text(encoding="utf-8")).get("relative_cut")
+        if saved is not None:
+            # Results almost as good as the best are always kept, whatever was measured.
+            return min(float(saved), float(cfg.get("relative_cut_max", 0.8)))
+    value = cfg.get("min_relative_score")
+    return None if value is None else float(value)
+
+
 class Searcher:
     """Holds the index, models and chunk table open, so many questions are cheap (evaluation)."""
 
@@ -241,6 +258,7 @@ class Searcher:
         if ran == "keyword":
             pts = self.qc.query_points(name, query=sparse, using="bm25", limit=cand).points if idx else []
         else:
+            assert self.encoder is not None  # ran is keyword without an encoder
             dense = self.encoder.query(query).tolist()
             if ran == "vector":
                 pts = self.qc.query_points(name, query=dense, using="dense", limit=cand).points
@@ -261,14 +279,38 @@ class Searcher:
                 top = hits[: int(cfg.get("rerank_top", 20))]
                 for h, s in zip(top, score(query, [h.text for h in top]), strict=True):
                     h.rerank_score = s
-                hits = sorted(top, key=lambda h: h.rerank_score, reverse=True) + hits[len(top) :]
-                floor = min_rerank_score(self.subject) if cut else None
-                if floor is not None:
-                    kept = [h for h in hits if h.rerank_score is not None and h.rerank_score >= floor]
-                    if len(kept) < len(hits):
-                        notes.append(f"Weak matches (reranker score below {floor}) were left out.")
-                    hits = kept
+                hits = sorted(top, key=lambda h: h.rerank_score or 0.0, reverse=True) + hits[len(top) :]
+                if cut:
+                    floor = min_rerank_score(self.subject)
+                    share = relative_cut(self.subject)
+                    best = hits[0].rerank_score if hits and hits[0].rerank_score is not None else 0.0
+                    need = max(floor or 0.0, (share or 0.0) * best)
+                    if floor is not None or share is not None:
+                        kept = [h for h in hits if h.rerank_score is not None and h.rerank_score >= need]
+                        if len(kept) < len(hits):
+                            notes.append(f"Weaker matches (reranker score below {round(need, 4)}) were left out.")
+                        hits = kept
         hits = merge_overlapping(hits, k, int(cfg.get("merge_max_pages", 4)))
+        with tracing.observe("search-material", as_type="retriever", input=query) as obs:
+            tracing.update(
+                obs,
+                output=[
+                    {
+                        "where": where(h.pages),
+                        "topic": h.topic,
+                        "score": h.rerank_score if h.rerank_score is not None else h.score,
+                        "text": h.text,
+                    }
+                    for h in hits[:k]
+                ],
+                metadata={
+                    "subject": self.subject,
+                    "mode": ran,
+                    "chunking": method,
+                    "results": len(hits[:k]),
+                    "ms": round((time.perf_counter() - started) * 1000, 1),
+                },
+            )
         info = {
             "chunking": method,
             "mode": ran,

@@ -17,4 +17,26 @@ subjects:
   # python:
   #   - docs.python.org
 
-relevance_threshold: 0.5   # tuned during evaluation
+# Search platforms tried in order until one finds something on the allowed sites
+# (a platform without its key in .env is skipped):
+# - tavily: TAVILY_API_KEY, free monthly credit, no card
+# - exa: EXA_API_KEY, free monthly credit, no card (dashboard.exa.ai)
+# - duckduckgo: no key (ddgs library); unofficial and rate-limited, so keep it last
+# - brave: BRAVE_API_KEY; its free credit now needs a card on file, so it is not in the list
+search_providers: [tavily, exa, duckduckgo]
+
+# Relevance gate: a passage from a trusted site is used only when it is about the question
+# AND close to what your slides say.
+# - relevance_threshold: reranker score of (question, passage), 0 to 1 (Kaggle and the Space).
+# - slide_similarity: highest similarity between the passage and any slide passage given
+#   with the question, per embedding backend (the laptop uses TF-IDF, whose values are lower).
+# Starting values: examprep-answer-eval reports how often the gate rejects passages.
+relevance_threshold: 0.5
+slide_similarity:
+  sentence-transformers: 0.55
+  tfidf: 0.1
+# For a question your slides do not cover there are no slide passages: the passage must
+# instead be close to the question.
+question_similarity:
+  sentence-transformers: 0.5
+  tfidf: 0.05

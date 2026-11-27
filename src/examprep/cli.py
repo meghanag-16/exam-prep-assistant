@@ -10,6 +10,10 @@ through these, so the same code runs locally, on Kaggle and on the Space.
   examprep-search "question" --subject <name> [--chunking C] [--mode M] [-k 5] [--json] [--pull]
   examprep-evalset --subject <name> [--count 50] [--outside 10] [--redo] [--download] [--upload] [--push] [--pull]
   examprep-eval --subject <name> [--methods ...] [--modes ...] [--save-best] [--push] [--pull]
+  examprep-ask "question" --subject <name> [--marks 5] [--deeper] [--no-cache] [--json] [--pull]
+  examprep-answer-eval --subject <name> [--limit 50] [--deeper 5] [--push] [--pull]
+  examprep-notes --subject <name> [--topic ID|NAME ...] [--redo] [--export md pdf] [--marker-test] [--push] [--pull]
+  examprep-revise --subject <name> [--topic ID|NAME ...] [--redo] [--export md pdf] [--push] [--pull]
 """
 
 from __future__ import annotations
@@ -455,5 +459,199 @@ def eval_main(argv: list[str] | None = None) -> None:
         f"MRR {best['mrr']:.2f}" + (" (saved as the default)" if args.save_best else "")
     )
     print(f"Report: {ledger.subject_dir(subject) / 'eval' / 'retrieval_report.md'}")
+    if args.push:
+        _push(subject)
+
+
+def _ensure_index(subject: str) -> None:
+    from examprep.search import index
+
+    if not index.read_meta(subject):
+        print("No search index yet: building it now.")
+        index.build(subject)
+    elif index.is_stale(subject):
+        print("Note: the material changed since the index was built; run examprep-index to update it.")
+
+
+def ask_main(argv: list[str] | None = None) -> None:
+    from examprep import tracing
+    from examprep.answer import grounded
+    from examprep.search import index
+
+    parser = argparse.ArgumentParser(
+        prog="examprep-ask",
+        description="Answer a question from the course material, with checked citations. A question the "
+        "slides do not cover is flagged and answered from trusted sites (or general knowledge, labelled).",
+    )
+    parser.add_argument("question", help="the question, in quotes")
+    parser.add_argument("--subject", help="optional when only one subject exists")
+    parser.add_argument(
+        "--marks", type=int, help="mark level from config/exam_pattern.yaml: 2, 4, 5, 6, 7, 8, 10 or 15 (default 5)"
+    )
+    parser.add_argument(
+        "--deeper", action="store_true", help="add extra explanations, with trusted-site passages (uses Tavily)"
+    )
+    parser.add_argument("--no-cache", action="store_true", help="write a new answer even if this was asked before")
+    parser.add_argument("--pull", action="store_true", help="download the latest ledger and index first")
+    parser.add_argument("--json", action="store_true", help="print the full result as JSON")
+    parser.add_argument("--session", help="group questions in Langfuse under this session id (when tracing is on)")
+    args = parser.parse_args(argv)
+    subject = _resolve_subject(args.subject)
+    _pull_or_require(subject, args.pull)
+    _ensure_index(subject)
+    try:
+        r = grounded.answer(
+            subject, args.question, args.marks, args.deeper, use_cache=not args.no_cache, session_id=args.session
+        )
+    except ValueError as e:
+        sys.exit(str(e))
+    finally:
+        index.close()
+    if args.json:
+        print(json.dumps(r, indent=2, ensure_ascii=False))
+        return
+    for n in r.get("search", {}).get("notes", []):
+        print(n)
+    print(grounded.to_markdown(r))
+    if not r["in_slides"]:
+        print(f"(Not in the slides: {r.get('reason')})")
+    else:
+        c = r["checks"]
+        status = "all checks passed" if not c.get("problems") else "checks still failing: " + " ".join(c["problems"])
+        print(f"Citations {'valid' if c.get('citations_valid') else 'NOT valid'}; {status}")
+    t = r["tokens"]
+    print(
+        f"Answer id {r['id']}{' (from the cache)' if r.get('cached') else ''}; {r['ms']} ms; "
+        f"{t['prompt'] + t['completion']} tokens in {t['calls']} call(s)"
+    )
+    url = tracing.trace_url(r.get("trace_id"))
+    if url:
+        print(f"Trace: {url}")
+    tracing.flush()
+
+
+def answer_eval_main(argv: list[str] | None = None) -> None:
+    from examprep.answer import evaluate as answer_eval
+    from examprep.search import index
+
+    parser = argparse.ArgumentParser(
+        prog="examprep-answer-eval",
+        description="Measure grounded answers on data/<subject>/eval/questions.yaml: valid citations, correct "
+        "refusals, latency and tokens per answer.",
+    )
+    parser.add_argument("--subject", help="optional when only one subject exists")
+    parser.add_argument("--limit", type=int, help="at most this many in-material questions (default 50)")
+    parser.add_argument(
+        "--deeper", type=int, help="questions also answered with extra explanations (default 5, uses Tavily)"
+    )
+    parser.add_argument("--pull", action="store_true", help="download the latest ledger, index and questions first")
+    parser.add_argument("--push", action="store_true", help="upload the report to Hugging Face afterwards")
+    args = parser.parse_args(argv)
+    subject = _resolve_subject(args.subject)
+    _pull_or_require(subject, args.pull)
+    _ensure_index(subject)
+    try:
+        rep = answer_eval.run(subject, args.limit, args.deeper)
+    except (FileNotFoundError, ValueError) as e:
+        sys.exit(str(e))
+    finally:
+        index.close()
+
+    def pct(x):
+        return "-" if x is None else f"{x:.0%}"
+
+    print(
+        f"\nValid citations {pct(rep['valid_citations'])}, outside questions flagged {pct(rep['correct_refusals'])}, "
+        f"real questions wrongly flagged {pct(rep['false_refusals'])}, p95 {rep['p95_ms']} ms, "
+        f"{rep['tokens_per_answer_mean']} tokens per answer"
+    )
+    rg = rep["ragas"]
+    if rg.get("status") == "ok":
+        print(
+            f"RAGAS ({rg['judge']}): faithfulness {rg['faithfulness']}, groundedness {rg['response_groundedness']}, "
+            f"context relevance {rg['context_relevance']}"
+        )
+    else:
+        print(f"RAGAS: {rg.get('status')}")
+    print(f"Report: {ledger.subject_dir(subject) / 'eval' / 'answer_report.md'}")
+    if args.push:
+        _push(subject)
+
+
+def notes_main(argv: list[str] | None = None) -> None:
+    from examprep.notes import build, export, marker
+
+    parser = argparse.ArgumentParser(
+        prog="examprep-notes",
+        description="Full-coverage notes per topic (every page checked), with Markdown and PDF export.",
+    )
+    parser.add_argument("--subject", help="optional when only one subject exists")
+    parser.add_argument("--topic", action="append", default=[], help="topic id or part of its name (repeatable)")
+    parser.add_argument("--all", action="store_true", help="every topic (the default when no --topic is given)")
+    parser.add_argument("--redo", action="store_true", help="make the notes again even if stored ones are current")
+    parser.add_argument("--export", nargs="+", choices=["md", "pdf"], default=["md"], help="files to write")
+    parser.add_argument("--marker-test", action="store_true", help="also run the coverage marker test (20 facts)")
+    parser.add_argument("--pull", action="store_true", help="download the latest ledger from Hugging Face first")
+    parser.add_argument("--push", action="store_true", help="upload the ledger and notes to Hugging Face afterwards")
+    args = parser.parse_args(argv)
+    subject = _resolve_subject(args.subject)
+    _pull_or_require(subject, args.pull or (args.push and not ledger.db_path(subject).exists()))
+    try:
+        out = build.subject_notes(subject, args.topic or None, args.redo)
+    except ValueError as e:
+        sys.exit(str(e))
+    rep = out["report"]
+    md = export.notes_markdown(subject, out["notes"], rep)
+    name = "notes" if not args.topic else "notes_" + "_".join(str(n["topic_id"]) for n in out["notes"])
+    files = export.write(md, ledger.subject_dir(subject) / "notes" / name, args.export)
+    print(
+        f"\nCoverage: {rep['covered_pages']} of {rep['content_pages']} content pages ({rep['coverage']:.0%}) "
+        f"in {rep['topics']} topic(s); {rep['llm_calls']} model call(s)"
+    )
+    for u in rep["uncovered"]:
+        print(f"  not covered: {u['file']} p.{u['page_no']} ({u['topic']})")
+    if rep["thin"]:
+        print(f"  {len(rep['thin'])} page(s) covered briefly (see notes_report.json)")
+    for f in files:
+        print(f"Wrote {f}")
+    if args.marker_test:
+        m = marker.run(subject)
+        print(f"Marker test: {m['found']} of {m['planted']} planted facts found in the notes")
+        for x in m["missing"]:
+            print(f"  missing: {x['name']} {x['number']} ({x['file']} p.{x['page_no']})")
+    if args.push:
+        _push(subject)
+
+
+def revise_main(argv: list[str] | None = None) -> None:
+    from examprep.notes import export, revision
+
+    parser = argparse.ArgumentParser(
+        prog="examprep-revise",
+        description="Quick revision sheets: keywords, short points, comparison tables and formula tables.",
+    )
+    parser.add_argument("--subject", help="optional when only one subject exists")
+    parser.add_argument("--topic", action="append", default=[], help="topic id or part of its name (repeatable)")
+    parser.add_argument("--redo", action="store_true", help="make the sheets again even if stored ones are current")
+    parser.add_argument("--export", nargs="+", choices=["md", "pdf"], default=["md"], help="files to write")
+    parser.add_argument("--pull", action="store_true", help="download the latest ledger from Hugging Face first")
+    parser.add_argument("--push", action="store_true", help="upload the ledger and sheets to Hugging Face afterwards")
+    args = parser.parse_args(argv)
+    subject = _resolve_subject(args.subject)
+    _pull_or_require(subject, args.pull or (args.push and not ledger.db_path(subject).exists()))
+    try:
+        sheets = revision.subject_revision(subject, args.topic or None, args.redo)
+    except ValueError as e:
+        sys.exit(str(e))
+    title = subject if not args.topic else ", ".join(s["topic"] for s in sheets)
+    name = "revision" if not args.topic else "revision_" + "_".join(str(s["topic_id"]) for s in sheets)
+    files = export.write(
+        export.revision_markdown(subject, sheets, title), ledger.subject_dir(subject) / "notes" / name, args.export
+    )
+    n_f = sum(len(s["formulas"]) for s in sheets)
+    n_ex = sum(1 for s in sheets for f in s["formulas"] if f.get("example"))
+    print(f"\n{len(sheets)} topic(s), {n_f} formula(s), {n_ex} worked example(s) computed with SymPy")
+    for f in files:
+        print(f"Wrote {f}")
     if args.push:
         _push(subject)

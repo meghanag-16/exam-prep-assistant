@@ -31,6 +31,7 @@ import os
 import re
 import statistics
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -100,10 +101,10 @@ def boilerplate(units: list[list[Page]]) -> set[str]:
     share_units = float(cfg.get("repeated_in_decks", 0.5))
     share_pages = float(cfg.get("repeated_on_pages", 0.9))
     min_pages = int(cfg.get("single_deck_min_pages", 8))
-    per_unit = Counter()
+    per_unit: Counter[str] = Counter()
     boiler: set[str] = set()
     for unit in units:
-        seen = [Counter(), Counter(), Counter()]  # all pages, odd pages, even pages
+        seen: list[Counter[str]] = [Counter(), Counter(), Counter()]  # all pages, odd pages, even pages
         for k, p in enumerate(unit):
             layout = [str(e[0]).strip(BULLETS).strip() for e in p.layout if str(e[0]).strip(BULLETS).strip()]
             for ln in _keys(page_lines(p)) | _keys(layout):
@@ -208,7 +209,7 @@ def file_styles(pages: list[Page]) -> dict[int, FileStyle]:
             bold_share = sum(w for _, w, b in sized if b) / sum(w for _, w, _ in sized)
         # On scans, bullet symbols are read as a stray character ("4 Databases ...",
         # "e Flat file model"). A short token starting many OCR lines is such a bullet.
-        firsts = Counter()
+        firsts: Counter[str] = Counter()
         ocr_lines = 0
         for p in fpages:
             for entry in p.layout:
@@ -264,8 +265,10 @@ def heading_lines(page: Page, style: FileStyle | None, boiler: set[str]) -> list
     big = 1.2 if ocr else 1.12  # OCR sizes are estimates, so ask for a clearer difference
     tol = 0.12 if ocr else 0.03
 
+    body_size = style.body_size
+
     def strong(size: float, bold: bool | None) -> bool:
-        ratio = size / style.body_size
+        ratio = size / body_size
         return ratio >= big or (bool(bold) and not style.body_bold and ratio >= 0.95)
 
     # Join a heading split over two lines with the same style.
@@ -385,7 +388,7 @@ def headings(
 
 
 def is_front_matter(head: str | None) -> bool:
-    return bool(head) and FRONT_MATTER.match(strip_number(head)) is not None
+    return bool(head) and FRONT_MATTER.match(strip_number(head or "")) is not None
 
 
 def is_generic(head: str | None) -> bool:
@@ -432,7 +435,9 @@ class Section:
         return self.end - self.start + 1
 
 
-def build_sections(heads: list[str | None], subs: list[list[str] | str | None], filler: list[bool]) -> list[Section]:
+def build_sections(
+    heads: list[str | None], subs: Sequence[list[str] | str | None], filler: list[bool]
+) -> list[Section]:
     """Runs of pages with the same heading. Filler pages and pages without a
     heading join the section before them (or the first section at the start)."""
     bases = base_headings(heads)
@@ -440,8 +445,9 @@ def build_sections(heads: list[str | None], subs: list[list[str] | str | None], 
     def points(i: int) -> list[str]:
         s = subs[i]
         found = [s] if isinstance(s, str) else list(s or [])
-        if heads[i] and bases[i] and norm(heads[i]) != norm(bases[i]):
-            extra = heads[i][len(bases[i]) :].strip(" :-–")  # "Other Operations : Aggregation" -> "Aggregation"
+        head, base = heads[i], bases[i]
+        if head and base and norm(head) != norm(base):
+            extra = head[len(base) :].strip(" :-–")  # "Other Operations : Aggregation" -> "Aggregation"
             extra = CONTINUED.sub("", extra).strip()
             if extra and _looks_like_heading(extra):
                 found.insert(0, extra)
@@ -580,19 +586,20 @@ def chapters(
             continue
         deep = [h for h in hs if h.depth >= 2]
         level2 = min((h.size for h in deep), default=None)
-        top = [h for h in hs if h.depth == 1 and (h.text == main[k] if level2 is None else h.size >= level2 * 0.95)]
-        first = sorted(deep + top, key=lambda h: h.pos)
-        if first:
-            keyed.append((k, NUMBERED.match(first[0].text).group(1).split(".")[0], first[0]))
+        tops = [h for h in hs if h.depth == 1 and (h.text == main[k] if level2 is None else h.size >= level2 * 0.95)]
+        first = sorted(deep + tops, key=lambda h: h.pos)
+        m = NUMBERED.match(first[0].text) if first else None
+        if m:
+            keyed.append((k, m.group(1).split(".")[0], first[0]))
     if sum(1 for hs in heads_per_page if any(h.depth >= 2 for h in hs)) < 3:
         return [], None
-    starts: list[Chapter] = []
+    found: list[Chapter] = []
     current = None
     for k, key, h in keyed:
         if key != current:
             title = strip_number(h.text) if h.depth == 1 else None
-            starts.append(Chapter(k, title))
+            found.append(Chapter(k, title))
             current = key
-    if len({key for _, key, _ in keyed}) < 2 or not _valid_starts([c.start for c in starts], n, min_gap, 0.5):
+    if len({key for _, key, _ in keyed}) < 2 or not _valid_starts([c.start for c in found], n, min_gap, 0.5):
         return [], None
-    return starts, "numbered headings"
+    return found, "numbered headings"

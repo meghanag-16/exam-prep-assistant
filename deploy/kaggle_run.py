@@ -5,7 +5,7 @@ Code: cloned from CODE_REPO_URL on every run (a private repo needs a GITHUB_TOKE
       Set CODE_REPO_URL = "" to use a private Kaggle dataset with the project folder instead.
 Course files: a private Kaggle dataset with one subject's PDFs/PPTs/TXTs/zips (Add Input).
       A file with "syllabus" in its name is not ingested; it is used to check syllabus coverage.
-Secrets (Add-ons > Secrets): GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY,
+Secrets (Add-ons > Secrets): GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY (optional),
 TAVILY_API_KEY, HF_TOKEN, HF_DATASET_REPO. Internet must be On. A GPU is optional.
 
 All logic lives in the examprep package; this file only sets up the machine
@@ -23,8 +23,27 @@ SUBJECT = os.environ.get("EXAMPREP_SUBJECT", "my_subject")  # CHANGE THIS per su
 FORCE = os.environ.get("EXAMPREP_FORCE", "").lower() in {"1", "true", "yes"}
 # True measures search on the evaluation questions (and drafts them the first time).
 RUN_EVAL = os.environ.get("EXAMPREP_EVAL", "1").lower() in {"1", "true", "yes"}
+# True measures grounded answers (citations, refusals, latency, tokens) on the same questions.
+RUN_ANSWER_EVAL = os.environ.get("EXAMPREP_ANSWER_EVAL", "1").lower() in {"1", "true", "yes"}
+# True makes full-coverage notes and quick-revision sheets for every topic (Markdown and PDF).
+RUN_NOTES = os.environ.get("EXAMPREP_NOTES", "1").lower() in {"1", "true", "yes"}
+# True also runs the coverage marker test (facts planted on 20 pages must all reach the notes).
+RUN_MARKER = os.environ.get("EXAMPREP_MARKER", "1").lower() in {"1", "true", "yes"}
 CODE_REPO_URL = "https://github.com/meghanag-16/exam-prep-assistant"
-SECRETS = ["GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "TAVILY_API_KEY", "HF_TOKEN", "HF_DATASET_REPO"]
+SECRETS = [
+    "GEMINI_API_KEY",
+    "GROQ_API_KEY",
+    "OPENROUTER_API_KEY",
+    "NVIDIA_API_KEY",  # optional
+    "TAVILY_API_KEY",
+    "EXA_API_KEY",  # optional
+    "BRAVE_API_KEY",  # optional
+    "LANGFUSE_PUBLIC_KEY",  # optional
+    "LANGFUSE_SECRET_KEY",  # optional
+    "LANGFUSE_HOST",  # optional
+    "HF_TOKEN",
+    "HF_DATASET_REPO",
+]
 WORK = "/kaggle/working"
 
 
@@ -34,7 +53,10 @@ def sh(cmd: str) -> None:
 
 
 def install_system_tools() -> None:
-    sh("apt-get -qq update && apt-get -qq install -y tesseract-ocr libreoffice-impress > /dev/null")
+    sh(
+        "apt-get -qq update && apt-get -qq install -y "
+        "tesseract-ocr libreoffice-impress libpango-1.0-0 libpangoft2-1.0-0 > /dev/null"
+    )
 
 
 def install_project() -> tuple[str, str | None]:
@@ -54,14 +76,14 @@ def install_project() -> tuple[str, str | None]:
         if result.returncode != 0:
             # Never print the URL: it may contain the token.
             sys.exit("Could not clone the repo. If it is private, add a GITHUB_TOKEN secret with read access.")
-        sh(f"pip install -q -e '{dst}[ml]'")
+        sh(f"pip install -q -e '{dst}[ml,eval,pdf]'")
         return dst, None
     hits = [h for h in glob.glob("/kaggle/input/**/pyproject.toml", recursive=True)]
     if not hits:
         sys.exit("Project code not found: add the private code dataset as an input.")
     src = os.path.dirname(hits[0])
     shutil.copytree(src, dst, dirs_exist_ok=True)
-    sh(f"pip install -q -e '{dst}[ml]'")
+    sh(f"pip install -q -e '{dst}[ml,eval,pdf]'")
     return dst, src
 
 
@@ -136,6 +158,15 @@ def main() -> None:
         # one becomes the default.
         sh(f"examprep-evalset --subject {SUBJECT} --push")
         sh(f"examprep-eval --subject {SUBJECT} --save-best --push")
+    if RUN_ANSWER_EVAL:
+        # Answers every evaluation question from the material only, checks the citations and refusals,
+        # and answers a few with extra explanations from the trusted sites (uses Tavily credits).
+        sh(f"examprep-answer-eval --subject {SUBJECT} --push")
+    if RUN_NOTES:
+        # Notes for every topic, with every page checked; stored notes are reused while nothing changed.
+        marker = " --marker-test" if RUN_MARKER else ""
+        sh(f"examprep-notes --subject {SUBJECT} --export md pdf{marker} --push")
+        sh(f"examprep-revise --subject {SUBJECT} --export md pdf --push")
 
 
 if __name__ == "__main__":

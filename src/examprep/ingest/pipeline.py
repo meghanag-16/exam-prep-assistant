@@ -68,8 +68,8 @@ def ingest(
                     {"file": src.name, "status": "already ingested", "detail": "unchanged, not read again" + same}
                 )
                 if use_ocr and src.kind in {"pdf", "pptx", "ppt"}:
-                    imgs, pages = ledger.pending_ocr_for_file(con, existing["id"])
-                    if imgs or pages:
+                    imgs, ocr_pages = ledger.pending_ocr_for_file(con, existing["id"])
+                    if imgs or ocr_pages:
                         path, kind = src.path, src.kind
                         if src.kind == "ppt":
                             try:

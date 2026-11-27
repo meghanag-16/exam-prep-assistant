@@ -6,6 +6,10 @@ For every chunking method and search mode:
   not in the first mrr_depth results).
 - latency p50 and p95 per question.
 
+With reranking, the share of the best result's score that separates results holding
+the right page from the others is measured too (relative_cut): results below it are
+left out of searches.
+
 For the questions outside the material, the best score each mode gives is recorded
 next to the scores of real questions; a score threshold that separates them is
 suggested (used later to answer "not found in your course material").
@@ -21,6 +25,7 @@ import json
 import statistics
 import time
 from collections.abc import Callable
+from typing import Any
 
 from examprep import config
 from examprep.ingest import ledger
@@ -55,6 +60,29 @@ def threshold(inside: list[float], outside: list[float]) -> dict | None:
                 "accuracy": round(acc, 3),
                 "real_kept": round(sum(s >= cut for s in inside) / len(inside), 3),
                 "outside_refused": round(sum(s < cut for s in outside) / len(outside), 3),
+            }
+    return best
+
+
+def relative_threshold(pairs: list[tuple[float, bool]]) -> dict | None:
+    """From (score / best score, holds the right page) for every reranked result, the share
+    of the best score that best keeps right results and drops the others. Both sides count
+    equally (balanced accuracy): there are many more wrong results than right ones."""
+    right = [r for r, ok in pairs if ok]
+    wrong = [r for r, ok in pairs if not ok]
+    if not right or not wrong:
+        return None
+    best = None
+    for cut in sorted({round(r, 3) for r, _ in pairs}):
+        kept = sum(r >= cut for r in right) / len(right)
+        dropped = sum(r < cut for r in wrong) / len(wrong)
+        score = (kept + dropped) / 2
+        if best is None or score > best["balanced_accuracy"]:
+            best = {
+                "cut": cut,
+                "balanced_accuracy": round(score, 3),
+                "right_kept": round(kept, 3),
+                "wrong_dropped": round(dropped, 3),
             }
     return best
 
@@ -97,12 +125,13 @@ def run(
             log(f"Skipped {len(skipped)} question(s) whose page was not found: {', '.join(map(str, skipped))}")
         if not questions:
             raise ValueError("No usable questions in questions.yaml (each needs a question and a page that exists).")
-        rows = []
+        rows: list[dict[str, Any]] = []
         misses: dict[str, list[dict]] = {}
         for method in methods:
             for mode in modes:
                 t0 = time.time()
                 found, rr, times, real_scores, out_scores = 0, [], [], [], []
+                ratios: list[tuple[float, bool]] = []
                 ran = mode
                 miss = []
                 for q, pages in questions:
@@ -117,6 +146,13 @@ def run(
                     score = _top_score(hits, ran)
                     if score is not None:
                         real_scores.append(score)
+                    if ran == "hybrid_rerank" and hits and hits[0].rerank_score:
+                        top = hits[0].rerank_score
+                        ratios += [
+                            (h.rerank_score / top, bool(pages & {p["page_id"] for p in h.pages}))
+                            for h in hits
+                            if h.rerank_score is not None
+                        ]
                 for q in data["outside"]:
                     if not q.get("question"):
                         continue
@@ -135,6 +171,7 @@ def run(
                     "real_top_score_median": round(statistics.median(real_scores), 4) if real_scores else None,
                     "outside_top_score_median": round(statistics.median(out_scores), 4) if out_scores else None,
                     "refusal_threshold": threshold(real_scores, out_scores),
+                    "relative_cut": relative_threshold(ratios),
                 }
                 rows.append(row)
                 misses[f"{method}/{mode}"] = miss
@@ -144,7 +181,7 @@ def run(
                 )
         measured = [r for r in rows if r["ran_as"] == r["mode"]] or rows
         best = max(measured, key=lambda r: (r[f"recall@{k}"], r["mrr"], -r["p95_ms"]))
-        report = {
+        report: dict[str, Any] = {
             "subject": subject,
             "questions": len(questions),
             "outside_questions": len([q for q in data["outside"] if q.get("question")]),
@@ -170,6 +207,7 @@ def run(
                         f"recall@{k}": best[f"recall@{k}"],
                         "mrr": best["mrr"],
                         "refusal_threshold": (best.get("refusal_threshold") or {}).get("threshold"),
+                        "relative_cut": (best.get("relative_cut") or {}).get("cut"),
                     },
                     indent=2,
                 ),
@@ -192,8 +230,8 @@ def markdown(report: dict) -> str:
         f"Recall@{k}: share of questions whose page is in the top {k}. MRR: how high the right page ranks "
         "(1 = always first). Latency is per question on this machine.",
         "",
-        f"| Chunking | Mode | Recall@{k} | MRR | p50 ms | p95 ms | Refusal threshold (accuracy) |",
-        "|---|---|---|---|---|---|---|",
+        f"| Chunking | Mode | Recall@{k} | MRR | p50 ms | p95 ms | Refusal threshold (accuracy) | Relative cut |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in report["results"]:
         t = r.get("refusal_threshold")
@@ -201,7 +239,7 @@ def markdown(report: dict) -> str:
         mode = r["mode"] if r["ran_as"] == r["mode"] else f"{r['mode']} (ran as {r['ran_as']})"
         lines.append(
             f"| {r['chunking']} | {mode} | {r[f'recall@{k}']:.2f} | {r['mrr']:.2f} | {r['p50_ms']} | {r['p95_ms']} | "
-            f"{thr} |"
+            f"{thr} | {(r.get('relative_cut') or {}).get('cut', '-')} |"
         )
     lines += ["", f"Best: {report['best']['chunking']} chunks with {report['best']['mode']} search.", ""]
     lines += ["| Chunking | Chunks | Words per chunk | Pages per chunk |", "|---|---|---|---|"]

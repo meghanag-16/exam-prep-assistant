@@ -267,3 +267,28 @@ def test_weak_reranked_results_are_left_out(subject: str):
         s.close()
     assert len(hits) == 1 and 9 in [p["page_no"] for p in hits[0].pages] and info["notes"]
     assert len(all_hits) > 1  # evaluation sees every result
+
+
+def test_results_far_below_the_best_are_left_out(subject: str):
+    index.build(subject, ["page"], log=lambda m: None)
+
+    def rerank(query, texts):
+        # Like the real case: one clear answer (0.97), two pages sharing words (0.35, 0.31).
+        return [0.97 if "Thrashing" in t else 0.35 if "Paging" in t else 0.31 if "Bankers" in t else 0.0 for t in texts]
+
+    s = searching.Searcher(subject, reranker=rerank)
+    try:
+        hits, _ = s.search("time spent paging", "page", "hybrid_rerank", 5)
+        assert [h.rerank_score for h in hits] == [0.97]  # default share 0.5 of the best
+        searching.settings_path(subject).write_text(json.dumps({"relative_cut": 0.3}), encoding="utf-8")
+        hits, _ = s.search("time spent paging", "page", "hybrid_rerank", 5)
+        assert len(hits) == 2  # 0.35 and 0.31 kept (merged: Paging and Thrashing are neighbours)
+    finally:
+        s.close()
+
+
+def test_relative_threshold():
+    pairs = [(1.0, True)] * 8 + [(0.7, True), (0.4, False), (0.3, False), (0.2, False), (0.9, False)]
+    t = evaluate.relative_threshold(pairs)
+    assert t["cut"] > 0.4 and t["wrong_dropped"] >= 0.75
+    assert evaluate.relative_threshold([(1.0, True)]) is None
