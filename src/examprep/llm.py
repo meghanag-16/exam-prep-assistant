@@ -286,7 +286,8 @@ def chat(
 def _send(name, model, p, body, headers, timeout, retries, rest, errors) -> str | None:
     """One model of one provider, with retries. Returns the reply, or None after adding the error."""
     for attempt in range(retries + 1):
-        _pace(model, p.get("requests_per_minute"))
+        # A model may have its own limit (model_requests_per_minute), else the provider's.
+        _pace(model, (p.get("model_requests_per_minute") or {}).get(model, p.get("requests_per_minute")))
         try:
             r = httpx.post(p["base_url"].rstrip("/") + "/chat/completions", json=body, headers=headers, timeout=timeout)
         except httpx.HTTPError as e:

@@ -12,17 +12,22 @@ llm:
       api_key_env: GEMINI_API_KEY
       # Tried in this order: when one model's free quota runs out, the next is used.
       # Each Gemini model has its own free quota. All listed models must accept images.
-      # Only models with a free quota (AI Studio > Usage, RPM / RPD) are listed; free daily requests in brackets.
+      # Free limits from AI Studio > Usage > Rate limits by model (RPM = requests a minute,
+      # RPD = requests a day), as shown on 2026-11-28. The Flash models allow only 20 a day,
+      # so the Flash-Lite models (500 a day) come first and the Flash models are kept as spares.
       models:
-        - gemini-3.8-flash        # 20 a day
-        - gemini-3.6-flash        # 20 a day
-        - gemini-4-hydrogen       # 20 a day
-        - gemini-2.5-flash        # 20 a day
-        - gemini-3.5-flash-lite   # 500 a day
-        - gemini-3.1-flash-lite   # 500 a day
-        - gemini-2.5-flash-lite
+        - gemini-3.5-flash-lite   # 15 a minute, 500 a day
+        - gemini-3.1-flash-lite   # 15 a minute, 500 a day
+        - gemini-2.5-flash-lite   # limit not checked
+        - gemini-3.8-flash        # 5 a minute, 20 a day
+        - gemini-3.6-flash        # 5 a minute, 20 a day
+        - gemini-4-hydrogen       # 5 a minute, 20 a day
+        - gemini-2.5-flash        # 5 a minute, 20 a day
       vision: true
-      requests_per_minute: 5    # free tier per model; requests are spaced so this is not exceeded
+      requests_per_minute: 5    # default per model; requests are spaced so this is not exceeded
+      model_requests_per_minute:
+        gemini-3.5-flash-lite: 15
+        gemini-3.1-flash-lite: 15
     groq:
       base_url: https://api.groq.com/openai/v1/
       api_key_env: GROQ_API_KEY
@@ -61,8 +66,8 @@ llm:
       vision: false
       requests_per_minute: 30
     gemma:
-      # Gemma on the Gemini API key: a separate free quota (30 a minute, 14,400 a day in
-      # AI Studio > Usage), used for text only. Model name not verified: check with examprep-check.
+      # Gemma on the Gemini API key: a separate free quota (30 a minute, 14,400 a day, but only
+      # 16,000 tokens a minute in AI Studio > Usage), used for text only. Model name not verified: check with examprep-check.
       base_url: https://generativelanguage.googleapis.com/v1beta/openai/
       api_key_env: GEMINI_API_KEY
       models:
