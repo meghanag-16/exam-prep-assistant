@@ -8,7 +8,10 @@ evaluation questions:
 
 RAGAS calls its judge model itself (through an OpenAI-compatible client): evaluation.ragas_provider
 in config/answer.yaml when set, else the providers of config/models.yaml in order. A rate limit
-is waited out once; a judge that is refused or still limited is replaced by the next one.
+is waited out (for as long as the provider asks, "try again in 7.5s", up to
+evaluation.ragas_rate_limit_retries times); a daily limit, a refusal, or a judge still limited
+after that is replaced by the next judge. Instructor's own retry messages are not printed: the
+waits and judge changes are logged instead.
 A judgement that fails for another reason (for example a reply that is not valid JSON) is
 tried once more with the next judge, for that answer only. Judge replies may be up to
 evaluation.ragas_max_tokens tokens: RAGAS's own default (1024) cuts off faithfulness, which
@@ -21,8 +24,10 @@ scores are skipped and the report says so. RAGAS's anonymous usage tracking is t
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import os
+import re
 import time
 from collections.abc import Callable
 
@@ -90,6 +95,37 @@ def _kind(e: BaseException) -> str:
     return "other"
 
 
+def _limit_text(e: BaseException) -> str:
+    seen: set[int] = set()
+    parts = []
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        parts.append(f"{e.__class__.__name__} {e}")
+        resp = getattr(e, "response", None)
+        after = getattr(getattr(resp, "headers", None), "get", lambda _k: None)("retry-after")
+        if after:
+            parts.append(f"retry-after {after}")
+        e = e.__cause__ or e.__context__  # type: ignore[assignment]
+    return " ".join(parts)
+
+
+def retry_after(e: BaseException) -> float | None:
+    """Seconds the provider asks to wait ("try again in 1m2.5s", "in 250ms", Retry-After)."""
+    text = _limit_text(e)
+    m = re.search(r"try again in (?:(\d+)m(?!s))?\s*([\d.]+)\s*(ms|s)\b", text, re.IGNORECASE)
+    if m:
+        secs = float(m.group(2)) / (1000 if m.group(3).lower() == "ms" else 1)
+        return secs + 60 * int(m.group(1) or 0)
+    m = re.search(r"retry-after ([\d.]+)", text)
+    return float(m.group(1)) if m else None
+
+
+def daily_limit(e: BaseException) -> bool:
+    """True for a limit that will not clear within minutes (tokens or requests per day)."""
+    text = _limit_text(e).lower()
+    return any(k in text for k in ("per day", "tokens per day", "requests per day", "(tpd)", "(rpd)", "daily"))
+
+
 def _clean(x) -> float | None:
     try:
         v = float(x)
@@ -102,12 +138,15 @@ def score(items: list[dict], log: Log = print) -> dict:
     """items: [{"question", "answer", "contexts": [passage text, ...]}].
     Returns {"judge", "rows": [{"faithfulness", "response_groundedness", "context_relevance"}], "errors"}."""
     os.environ.setdefault("RAGAS_DO_NOT_TRACK", "true")
+    logging.getLogger("instructor").setLevel(logging.ERROR)  # rate limits are handled and logged here
     from ragas.metrics.collections import ContextRelevance, Faithfulness, ResponseGroundedness
 
     chain = _judges()
     state = {"at": 0}
     metric_sets: dict[int, dict] = {}
-    wait = float(config.answer()["evaluation"].get("ragas_rate_limit_wait", 30))
+    ecfg = config.answer()["evaluation"]
+    wait = float(ecfg.get("ragas_rate_limit_wait", 30))
+    tries = int(ecfg.get("ragas_rate_limit_retries", 3))
 
     def metrics(at: int) -> dict:
         if at not in metric_sets:
@@ -120,16 +159,18 @@ def score(items: list[dict], log: Log = print) -> dict:
         return metric_sets[at]
 
     async def one(key: str, args: dict, errors: list[str]) -> float | None:
-        waited = False
+        waited = 0
         while state["at"] < len(chain):
             try:
                 return _clean((await metrics(state["at"])[key].ascore(**args)).value)
             except Exception as e:  # noqa: BLE001 (one failed judgement must not stop the evaluation)
                 kind = _kind(e)
                 errors.append(f"{chain[state['at']][0]} {key}: {kind}: {e.__class__.__name__}: {str(e)[:160]}")
-                if kind == "rate" and not waited:
-                    waited = True
-                    await asyncio.sleep(wait)  # per-minute limits clear after a short wait
+                if kind == "rate" and waited < tries and not daily_limit(e):
+                    waited += 1
+                    pause = min(retry_after(e) or wait, 120.0) + 1.0  # per-minute limits clear soon
+                    log(f"  RAGAS judge {chain[state['at']][0]} rate-limited: waiting {pause:.0f}s")
+                    await asyncio.sleep(pause)
                     continue
                 if kind == "other":
                     # A bad reply for this answer: the judge itself is fine. Ask the next judge once.
@@ -142,8 +183,8 @@ def score(items: list[dict], log: Log = print) -> dict:
                                 f"{chain[alt][0]} {key}: {_kind(e2)}: {e2.__class__.__name__}: {str(e2)[:160]}"
                             )
                     return None
-                state["at"] += 1  # refused or still limited: use the next judge from now on
-                waited = False
+                state["at"] += 1  # refused, daily limit or still limited: use the next judge from now on
+                waited = 0
                 if state["at"] < len(chain):
                     log(f"  RAGAS judge switched to {chain[state['at']][0]}")
         return None

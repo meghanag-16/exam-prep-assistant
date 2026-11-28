@@ -491,13 +491,25 @@ def topic_ids(subject: str, wanted: list[str] | None = None) -> list[int]:
     return out
 
 
-def subject_notes(subject: str, wanted: list[str] | None = None, redo: bool = False, log: Log = print) -> dict:
-    """Notes for several topics (all by default) and the coverage report."""
+def subject_notes(
+    subject: str,
+    wanted: list[str] | None = None,
+    redo: bool = False,
+    log: Log = print,
+    after_topic: Callable[[int, int], None] | None = None,
+) -> dict:
+    """Notes for several topics (all by default) and the coverage report. after_topic(done,
+    total) is called after each topic (each topic's notes are already saved in the ledger
+    then), for example to upload progress so a stopped run keeps what it made."""
     subject = ledger.safe_subject(subject)
     ids = topic_ids(subject, wanted)
     con = ledger.connect(subject)
+    notes = []
     try:
-        notes = [topic_notes(subject, i, redo, log, con) for i in ids]
+        for n, i in enumerate(ids, start=1):
+            notes.append(topic_notes(subject, i, redo, log, con))
+            if after_topic is not None:
+                after_topic(n, len(ids))
     finally:
         con.close()
     content = sum(n["coverage"]["content_pages"] for n in notes)

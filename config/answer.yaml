@@ -60,5 +60,6 @@ evaluation:
   fresh_llm_calls: true   # answer without the LLM reply cache, so latency and tokens are real (uses quota)
   ragas_questions: 10     # answers scored with RAGAS (about 6 judge calls each); 0 turns it off
   ragas_provider:         # judge provider from models.yaml tried first; empty = models.yaml order
-  ragas_rate_limit_wait: 30  # seconds to wait once when the judge is rate-limited, before trying the next judge
+  ragas_rate_limit_wait: 30  # seconds to wait on a rate limit when the provider does not say how long
+  ragas_rate_limit_retries: 3  # waits per judgement before moving to the next judge (daily limits: none)
   ragas_max_tokens: 4096  # longest judge reply; RAGAS default 1024 cuts off faithfulness

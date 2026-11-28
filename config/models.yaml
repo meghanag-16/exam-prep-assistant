@@ -2,10 +2,11 @@
 # Model names and free limits change often: run `uv run examprep-check`
 # to confirm each configured model is actually listed by the provider.
 llm:
-  # Text requests try these in order. Groq and OpenRouter go first so Gemini's small daily
-  # quota (20 requests a day on the Flash models) is kept for what only it can do: reading
-  # images (formula pictures and scanned pages always go to providers with vision: true).
-  order: [groq, openrouter, nvidia, gemma, gemini]
+  # Text requests try these in order. Gemini goes first because its Flash-Lite models allow
+  # the most on the free tier (15 a minute, 500 a day and 250K tokens a minute each, in AI
+  # Studio > Usage), and it is the only provider for images (formula pictures and scanned
+  # pages always go to providers with vision: true). The others take over when it is limited.
+  order: [gemini, groq, openrouter, nvidia, gemma]
   providers:
     gemini:
       base_url: https://generativelanguage.googleapis.com/v1beta/openai/
@@ -75,7 +76,7 @@ llm:
       vision: false
       requests_per_minute: 30
   timeout_seconds: 60
-  max_retries: 2
+  max_retries: 1             # extra tries on the same model (timeouts, server errors) before the next model
   cache:
     enabled: true           # answer repeated requests from data/llm_cache.sqlite (synced to the dataset repo)
     days: 60                # cached replies older than this are asked again

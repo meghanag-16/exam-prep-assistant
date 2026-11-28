@@ -52,8 +52,11 @@ def test_notes_cover_every_page_and_retry_missed_ones(subject, monkeypatch):  # 
     assert (ledger.subject_dir(subject) / "notes" / "notes_report.json").exists()
     # Stored: asking again makes no request.
     n = len(fake.calls)
-    build.subject_notes(subject, log=lambda m: None)
+    seen: list[tuple[int, int]] = []
+    build.subject_notes(subject, log=lambda m: None, after_topic=lambda done, total: seen.append((done, total)))
     assert len(fake.calls) == n
+    total = len(out["notes"])
+    assert seen == [(i, total) for i in range(1, total + 1)]  # progress after every topic
 
 
 def test_thin_notes_are_reported(subject, monkeypatch):  # noqa: F811

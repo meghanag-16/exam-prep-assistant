@@ -620,11 +620,27 @@ def notes_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--marker-test", action="store_true", help="also run the coverage marker test (20 facts)")
     parser.add_argument("--pull", action="store_true", help="download the latest ledger from Hugging Face first")
     parser.add_argument("--push", action="store_true", help="upload the ledger and notes to Hugging Face afterwards")
+    parser.add_argument(
+        "--push-every",
+        type=int,
+        default=5,
+        metavar="N",
+        help="with --push, also upload after every N topics, so a stopped run keeps its notes (0: only at the end)",
+    )
     args = parser.parse_args(argv)
     subject = _resolve_subject(args.subject)
     _pull_or_require(subject, args.pull or (args.push and not ledger.db_path(subject).exists()))
+
+    def progress(done: int, total: int) -> None:
+        if args.push and args.push_every > 0 and done % args.push_every == 0 and done < total:
+            try:
+                hfsync.push(subject, message=f"notes progress {done}/{total} for {subject}")
+                print(f"  uploaded notes so far ({done} of {total} topics)")
+            except hfsync.SyncError as e:
+                print(f"  could not upload progress ({e}); continuing")
+
     try:
-        out = build.subject_notes(subject, args.topic or None, args.redo)
+        out = build.subject_notes(subject, args.topic or None, args.redo, after_topic=progress)
     except ValueError as e:
         sys.exit(str(e))
     rep = out["report"]

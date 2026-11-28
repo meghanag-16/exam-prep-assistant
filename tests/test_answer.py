@@ -537,7 +537,7 @@ def test_ragas_waits_once_then_switches_judge(monkeypatch):
     monkeypatch.setattr(ragas_eval, "_judges", lambda: chain)
     monkeypatch.setattr(ragas_eval, "_make_judge", lambda model_id, p: model_id)
     cfg = dict(ragas_eval.config.answer())
-    cfg["evaluation"] = {**cfg["evaluation"], "ragas_rate_limit_wait": 0}
+    cfg["evaluation"] = {**cfg["evaluation"], "ragas_rate_limit_wait": 0, "ragas_rate_limit_retries": 1}
     monkeypatch.setattr(ragas_eval.config, "answer", lambda: cfg)
     item = {"question": "q", "answer": "a", "contexts": ["c"]}
     res = ragas_eval.score([item, item], log=lambda m: None)
@@ -573,3 +573,23 @@ def test_ragas_bad_reply_is_retried_with_next_judge(monkeypatch):
     res = ragas_eval.score([{"question": "q", "answer": "a", "contexts": ["c"]}], log=logs.append)
     assert res["rows"] == [{"faithfulness": 0.9, "response_groundedness": 0.9, "context_relevance": 0.9}]
     assert any("not valid JSON" in line for line in logs)  # the reason is shown in the log
+
+
+def test_ragas_rate_limit_waits_as_asked():
+    from examprep.answer import ragas_eval
+
+    class RateLimitError(Exception):
+        pass
+
+    groq = RateLimitError(
+        "Error code: 429 - Rate limit reached for model `openai/gpt-oss-120b` on tokens per minute (TPM): "
+        "Limit 8000, Used 7000, Requested 2500. Please try again in 7.5s."
+    )
+    assert ragas_eval.retry_after(groq) == 7.5 and not ragas_eval.daily_limit(groq)
+    assert ragas_eval.retry_after(RateLimitError("Please try again in 1m2.5s")) == 62.5
+    assert ragas_eval.retry_after(RateLimitError("Please try again in 250ms")) == 0.25
+    daily = RateLimitError("Rate limit reached on tokens per day (TPD): Limit 200000. Please try again in 9m3s.")
+    assert ragas_eval.daily_limit(daily)
+    wrapped = RuntimeError("Max retries exceeded")
+    wrapped.__cause__ = groq
+    assert ragas_eval.retry_after(wrapped) == 7.5
