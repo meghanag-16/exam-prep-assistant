@@ -69,13 +69,18 @@ def run(subject: str, facts: int | None = None, seed: int = 7, log: Log = print)
         shutil.rmtree(ledger.subject_dir(copy), ignore_errors=True)
     for x in planted:
         text = texts.get(x["topic_id"], "")
-        x["found"] = x["name"].lower() in text and x["number"] in text
+        x["name_found"], x["number_found"] = x["name"].lower() in text, x["number"] in text
+        x["found"] = x["name_found"] and x["number_found"]
     found = sum(x["found"] for x in planted)
     report = {
         "subject": subject,
         "planted": len(planted),
         "found": found,
-        "missing": [{k: x[k] for k in ("name", "number", "file", "page_no")} for x in planted if not x["found"]],
+        "missing": [
+            {k: x[k] for k in ("name", "number", "file", "page_no", "name_found", "number_found")}
+            for x in planted
+            if not x["found"]
+        ],
         "run_at": ledger.now(),
     }
     out = ledger.subject_dir(subject) / "notes"

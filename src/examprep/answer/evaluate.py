@@ -17,8 +17,12 @@ With extra explanations (a few questions, they use Tavily credits): the share of
 "beyond your slides" points with a valid trusted link, and how often the relevance gate
 rejects passages.
 
-Answers are written fresh (the answer cache is not used); the LLM reply cache still
-applies, and calls it answered are counted, since they make latency look better.
+Answers are written fresh: the answer cache is not used and, with evaluation.fresh_llm_calls
+(the default), neither is the LLM reply cache, so latency and tokens are real figures (this
+uses API quota on each run; the launcher runs it only when something it depends on changed).
+Calls answered from the cache are counted in the report.
+For every answer, the report lists the pages or sites it used, so an outside question that
+was answered from the slides can be checked.
 Writes data/<subject>/eval/answer_report.json and answer_report.md. The report keeps a key of
 everything it depends on (index, questions, settings, prompts); is_current tells whether a new
 run would measure the same thing.
@@ -26,6 +30,7 @@ run would measure the same thing.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import statistics
@@ -33,7 +38,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from examprep import config, tracing
+from examprep import config, llm, tracing
 from examprep.answer import grounded, ragas_eval
 from examprep.ingest import ledger
 from examprep.search import evalset, index
@@ -96,6 +101,7 @@ def run(
     # Every answer of this run is its own trace, grouped in Langfuse as one session.
     session = f"answer-eval-{subject}-{time.strftime('%Y%m%d-%H%M%S')}"
     traced: dict[str, Any] = {"session_id": session, "tags": ["answer-eval"]}
+    stack = contextlib.ExitStack()
     try:
         real = []
         for q in data["questions"]:
@@ -107,6 +113,9 @@ def run(
         if not real and not outside:
             raise ValueError("No usable questions in questions.yaml.")
         rows, times, tokens, cached_calls, ragas_items = [], [], [], 0, []
+        fresh = bool(config.answer()["evaluation"].get("fresh_llm_calls", True))
+        if fresh:
+            stack.enter_context(llm.fresh())
         for n, (q, pages) in enumerate(real, start=1):
             r = a.answer(q["question"], q.get("marks"), use_cache=False, **traced)
             inside = r["in_slides"]
@@ -155,12 +164,17 @@ def run(
                     "refused": not r["in_slides"],
                     "outside_source": r.get("outside_source"),
                     "in_syllabus": r.get("in_syllabus"),
+                    # Where the answer came from: slide pages, or site links for a trusted answer.
+                    "used": [x.get("where") or x.get("url") for x in r.get("sources") or []][:5],
+                    "top_retrieved": [x.get("where") for x in (r.get("retrieved") or [])[:3]],
                 }
             )
             times.append(r["ms"])
             cached_calls += r["tokens"]["cached_calls"]
             flag = "flagged not in slides" if not r["in_slides"] else "ANSWERED FROM SLIDES"
             log(f"    {flag}, answer from {r.get('outside_source') or 'slides'}  {r['ms']:.0f} ms")
+            if r["in_slides"]:
+                log(f"    pages used: {'; '.join(str(u) for u in out_rows[-1]['used']) or 'none'}")
         deep_rows = []
         if real[:deeper]:
             log(f"Extra explanations ({len(real[:deeper])} questions, with trusted-site search):")
@@ -179,6 +193,7 @@ def run(
                     "error": info.get("error"),
                 }
             )
+        stack.close()  # RAGAS below makes its own calls
         answered = [r for r in rows if not r["refused"]]
         ragas: dict = {"status": "not installed (pip install -e .[eval])"}
         n_ragas = int(config.answer()["evaluation"].get("ragas_questions", 10))
@@ -228,6 +243,7 @@ def run(
             "tokens_per_answer_p95": _percentile([float(t) for t in tokens], 0.95),
             "mean_attempts": round(statistics.mean(r["attempts"] for r in answered), 2) if answered else None,
             "llm_calls_from_cache": cached_calls,
+            "fresh_llm_calls": fresh,
             "extra": {
                 "questions": len(deep_rows),
                 "beyond_points": beyond,
@@ -235,7 +251,8 @@ def run(
                 "gate_rejection_rate": _share(sum(d["rejected"] for d in deep_rows), cands),
                 "errors": sorted({d["error"] for d in deep_rows if d["error"]}),
             },
-            "model_note": "tokens are the providers' own usage figures; 0 when a reply came from the cache",
+            "model_note": "tokens are the providers' own usage figures; 0 when a reply came from the cache "
+            "(fresh_llm_calls false)",
             "rows": rows,
             "outside": out_rows,
             "extra_rows": deep_rows,
@@ -248,6 +265,7 @@ def run(
         (out / "answer_report.md").write_text(markdown(report), encoding="utf-8")
         return report
     finally:
+        stack.close()
         if answerer is None:
             a.close()
 
@@ -315,5 +333,13 @@ def markdown(r: dict) -> str:
     wrong = [x for x in r["outside"] if not x["refused"]]
     if wrong:
         lines += ["", "## Outside questions answered as if they were in the slides", ""]
-        lines += [f"- {x['id']}: {x['question']}" for x in wrong]
+        lines += [
+            "If the pages used really answer the question, the question is in the material: move it to the "
+            "questions with a known page in questions.yaml.",
+            "",
+        ]
+        lines += [
+            f"- {x['id']}: {x['question']} (pages used: {'; '.join(str(u) for u in x.get('used') or []) or 'none'})"
+            for x in wrong
+        ]
     return "\n".join(lines) + "\n"

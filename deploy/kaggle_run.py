@@ -25,7 +25,7 @@ import sys
 SUBJECT = os.environ.get("EXAMPREP_SUBJECT", "my_subject")  # CHANGE THIS per subject, e.g. "operating_systems"
 # True re-reads files that were already ingested (for example to redo OCR after an update).
 FORCE = os.environ.get("EXAMPREP_FORCE", "").lower() in {"1", "true", "yes"}
-# True measures search on the evaluation questions (and drafts them the first time).
+# True measures search on the hand-picked evaluation questions (eval/questions.yaml).
 RUN_EVAL = os.environ.get("EXAMPREP_EVAL", "1").lower() in {"1", "true", "yes"}
 # True measures grounded answers (citations, refusals, latency, tokens) on the same questions.
 RUN_ANSWER_EVAL = os.environ.get("EXAMPREP_ANSWER_EVAL", "1").lower() in {"1", "true", "yes"}
@@ -137,6 +137,9 @@ def find_syllabus(inputs: list[str]) -> str | None:
 
 
 def main() -> None:
+    # Print each line as it happens, so log lines (for example rate-limit messages) appear
+    # next to the step that caused them instead of in a block printed earlier.
+    os.environ["PYTHONUNBUFFERED"] = "1"
     install_system_tools()
     project_dir, code_dir = install_project()
     load_secrets()
@@ -162,9 +165,10 @@ def main() -> None:
     # Rebuilt only when pages, topics, formulas or chunk settings changed.
     sh(f"examprep-index --subject {SUBJECT} --if-changed --push")
     if RUN_EVAL:
-        # The first time, the LLM drafts evaluation questions (kept afterwards: edit them on your laptop
-        # and upload with examprep-evalset --upload). Then every search setting is measured and the best
-        # one becomes the default. Skipped while the index, questions and settings are unchanged.
+        # The evaluation questions are picked by hand (write them on your laptop and upload with
+        # examprep-evalset --upload); an existing questions.yaml is always kept, and a starting draft is
+        # written only when there is none. Then every search setting is measured and the best one becomes
+        # the default. Skipped while the index, questions and settings are unchanged.
         sh(f"examprep-evalset --subject {SUBJECT} --push")
         sh(f"examprep-eval --subject {SUBJECT} --save-best --if-changed --push")
     if RUN_ANSWER_EVAL:

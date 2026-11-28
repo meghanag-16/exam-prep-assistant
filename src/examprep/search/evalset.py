@@ -1,16 +1,17 @@
 """The evaluation set: questions with a known source page, plus questions whose answer
-is not in the material. Stored in data/<subject>/eval/questions.yaml, which you can
-read, fix and extend by hand (hand-written questions count the same).
+is not in the material. Stored in data/<subject>/eval/questions.yaml. The questions are
+picked by hand: you write each question with the page that answers it.
 
-A first draft is written by the LLM so you do not start from nothing:
+Optional starting draft, only when a subject has no questions.yaml yet (or with --redo),
+so a new subject does not start from nothing:
 - in-syllabus: pages are picked evenly across topics (skipping near-duplicates,
   cover pages and pages with few words); for each, the LLM writes one question a
   student might ask whose answer is on that page, in its own words rather than
   copying the page (copied wording would make keyword search look better than it is).
 - outside: questions from the same broad field on topics the material does not cover.
 
-Always read the draft: drop questions that are vague, answered on many pages, or
-not really answered on the page given.
+A draft is only a starting point: replace it with questions picked by hand, and drop
+questions that are vague, answered on many pages, or not really answered on the page given.
 """
 
 from __future__ import annotations

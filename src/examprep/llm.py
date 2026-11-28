@@ -71,6 +71,20 @@ def cache_enabled() -> bool:
     return bool(config.models()["llm"].get("cache", {}).get("enabled", True))
 
 
+_fresh = [0]
+
+
+@contextmanager
+def fresh() -> Iterator[None]:
+    """Inside this block every request goes to the API (replies are still stored in the
+    cache). Used by the answer evaluation, so latency and token figures are real."""
+    _fresh[0] += 1
+    try:
+        yield
+    finally:
+        _fresh[0] -= 1
+
+
 def cache_path() -> Path:
     return config.data_dir() / "llm_cache.sqlite"
 
@@ -212,7 +226,7 @@ def chat(
     retries = int(cfg.get("max_retries", 2))
     rest = float(cfg.get("quota_rest_seconds", 300))
     key = cache_key(messages, json_mode) if cache_enabled() else None
-    if key:
+    if key and not _fresh[0]:
         cached = _cache_get(key)
         if cached is not None:
             _count(cached=True)

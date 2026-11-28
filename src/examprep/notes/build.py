@@ -1,17 +1,21 @@
 """Full-coverage notes, built so that no page is skipped.
 
 For each topic of the topic map, in order:
-1. Batch notes: the topic's pages go to the model a few at a time (config/answer.yaml
-   notes.batch_pages, 3 to 5), each labelled [P1], [P2], ... Every point the model writes
+1. Batch notes: the topic's pages go to the model a few at a time, each labelled [P1],
+   [P2], ... A batch holds at most notes.batch_pages pages and notes.batch_words words, so
+   dense pages (lecture notes) go in smaller batches than short slides; a page longer than
+   notes.max_page_words is sent in parts, never cut short. Every point the model writes
    lists the pages it comes from.
-2. Coverage check (code): every content page must be the source of at least one point,
-   and the points for a page must contain enough of that page's key terms (a page whose
-   points miss its terms was only skimmed). Pages that fail go back to the model on their
-   own, up to notes.max_retries times; anything still missing is listed in the report.
+2. Coverage check (code): every content page must be the source of at least one point;
+   the points for a page must contain enough of that page's key terms (a page whose points
+   miss its terms was only skimmed) and its specific details: every number, and enough of
+   its rare names and terms (skimming loses these first). Pages that fail go back to the model with the missing
+   terms and details named, up to notes.max_retries times; anything still missing is listed
+   in the report.
 3. Merge: the model groups the points into sections in topic-map order and marks exact
    repeats. It works with point numbers only, so it cannot drop or change a point: any
    point it leaves out is added back, and a repeat is removed only when the point kept
-   covers the same pages.
+   covers the same pages and already holds the repeat's words and numbers.
 
 Cover and contents pages, and near-duplicate pages (same slide shown again), are not sent
 and are counted separately. Page citations are stored with every point (for the coverage
@@ -24,6 +28,7 @@ for; they are made again only when the topic's pages, the topic map or the setti
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import re
@@ -35,10 +40,10 @@ from examprep.answer import terms as termlib
 from examprep.ingest import ledger
 from examprep.search import chunks as chunking
 from examprep.search import search as searching
+from examprep.search.index import tokens as index_tokens
 
 Log = Callable[[str], None]
-PROMPT_VERSION = "notes-1"
-MAX_PAGE_WORDS = 1200
+PROMPT_VERSION = "notes-2"
 _PLABEL = re.compile(r"P\d+")
 
 SCHEMA = """
@@ -101,32 +106,66 @@ def fingerprint(con: sqlite3.Connection, topic: Topic) -> str:
     return h.hexdigest()[:24]
 
 
-def _page_text(page: chunking.PageInfo, formulas: dict[int, list[tuple[int, str]]]) -> str:
-    words = page.text.split()
-    text = page.text if len(words) <= MAX_PAGE_WORDS else " ".join(words[:MAX_PAGE_WORDS]) + " ..."
-    found = formulas.get(page.id, [])
-    if found:
-        text += "\nFormulas on this page: " + "; ".join(label for _, label in found)
-    return text
+def units(pages: list[chunking.PageInfo], formulas: dict[int, list[tuple[int, str]]]) -> list[chunking.PageInfo]:
+    """The pages as sent to the model: formulas added, and a page longer than
+    notes.max_page_words split into parts (same page id) instead of being cut short."""
+    limit = max(200, int(_settings().get("max_page_words", 900)))
+    out = []
+    for p in pages:
+        text = p.text
+        found = formulas.get(p.id, [])
+        if found:
+            text += "\nFormulas on this page: " + "; ".join(label for _, label in found)
+        words = text.split()
+        if len(words) <= limit:
+            out.append(dataclasses.replace(p, text=text))
+            continue
+        n = -(-len(words) // limit)
+        size = -(-len(words) // n)  # equal parts
+        for k in range(n):
+            part = " ".join(words[k * size : (k + 1) * size])
+            out.append(dataclasses.replace(p, text=f"(part {k + 1} of {n} of this page) {part}"))
+    return out
+
+
+def batches(items: list[chunking.PageInfo]) -> list[list[chunking.PageInfo]]:
+    """Consecutive groups of at most notes.batch_pages pages and notes.batch_words words."""
+    cfg = _settings()
+    max_pages = max(1, min(int(cfg.get("batch_pages", 4)), 8))
+    max_words = max(200, int(cfg.get("batch_words", 1500)))
+    out: list[list[chunking.PageInfo]] = []
+    cur: list[chunking.PageInfo] = []
+    words = 0
+    for it in items:
+        n = len(it.text.split())
+        if cur and (len(cur) >= max_pages or words + n > max_words):
+            out.append(cur)
+            cur, words = [], 0
+        cur.append(it)
+        words += n
+    if cur:
+        out.append(cur)
+    return out
 
 
 # ------------------------------------------------------------ model steps
 
 
-def _batch_messages(topic: Topic, batch: list[chunking.PageInfo], formulas, extra: str | None = None) -> list[dict]:
+def _batch_messages(topic: Topic, batch: list[chunking.PageInfo], extra: str | None = None) -> list[dict]:
     rules = [
         "Write exam revision notes for the pages in <material>.",
         "Cover every page: each page label must appear in the pages list of at least one point.",
         "Keep every definition, step, condition, rule, formula, example, comparison and number a student needs "
-        "for an exam. Leave out slide furniture such as repeated titles, instructor names and 'thank you'.",
+        "for an exam. Keep names, values and numbers exactly as the page writes them.",
+        "Leave out slide furniture such as repeated titles, instructor names and 'thank you'. A page that only "
+        "lists the chapter's contents or objectives still gets one point saying what the chapter covers.",
         "Each point is one or two sentences of Markdown. Bold the key term. Write formulas in LaTeX between $ signs.",
         "pages lists the labels of the pages the point comes from. Use only the labels given.",
         "Use only what the pages say; never add facts of your own.",
         'Reply with JSON only: {"points": [{"text": "...", "pages": ["P1"]}]}',
     ]
     material = "\n\n".join(
-        f"[P{n}] ({p.file} p.{p.page_no}" + (f", {topic.heading_of(p)}" if topic.heading_of(p) else "") + ")\n"
-        f"{_page_text(p, formulas)}"
+        f"[P{n}] ({p.file} p.{p.page_no}" + (f", {topic.heading_of(p)}" if topic.heading_of(p) else "") + f")\n{p.text}"
         for n, p in enumerate(batch, start=1)
     )
     user = f"Topic: {topic.name}\n\n<material>\n{material}\n</material>"
@@ -164,28 +203,40 @@ def _points(reply, batch: list[chunking.PageInfo]) -> list[dict]:
 def check_pages(
     points: list[dict], pages: list[chunking.PageInfo], stats: termlib.TermStats
 ) -> tuple[list[int], dict[int, list[str]]]:
-    """(uncovered page ids, {thin page id: missing key terms}) for these points."""
+    """(uncovered page ids, {thin page id: missing key terms and details}) for these points.
+    A page sent in parts is checked part by part, each against all points for the page."""
     cfg = _settings()
     n_terms, need = int(cfg.get("page_terms", 5)), float(cfg.get("min_term_share", 0.4))
-    uncovered, thin = [], {}
+    n_details, need_details = int(cfg.get("page_details", 8)), float(cfg.get("min_detail_share", 0.8))
+    uncovered: list[int] = []
+    thin: dict[int, list[str]] = {}
     for p in pages:
         text = "\n".join(pt["text"] for pt in points if p.id in pt["page_ids"])
         if not text:
-            uncovered.append(p.id)
+            if p.id not in uncovered:
+                uncovered.append(p.id)
             continue
+        missing: list[str] = []
         key = stats.key_terms(p.text, n_terms)
         if len(key) >= 2 and termlib.share_present(key, text) < need:
             have = set(termlib.present(key, text))
-            thin[p.id] = [t for t in key if t not in have]
+            missing += [t for t in key if t not in have]
+        # Numbers must all be kept; rare words (names, terms) at least min_detail_share of them.
+        details = stats.details(p.text, n_details)
+        have = set(termlib.present(details, text))
+        numbers = [t for t in details if t.isdigit()]
+        words = [t for t in details if not t.isdigit()]
+        if any(t not in have for t in numbers) or (words and termlib.share_present(words, text) < need_details):
+            missing += [t for t in details if t not in have and t not in missing]
+        if missing:
+            thin[p.id] = thin.get(p.id, []) + [t for t in missing if t not in thin.get(p.id, [])]
     return uncovered, thin
 
 
-def _batch_notes(topic: Topic, batch, formulas, stats, log: Log) -> tuple[list[dict], list[int], dict]:
+def _batch_notes(topic: Topic, batch, stats, log: Log) -> tuple[list[dict], list[int], dict]:
     """Points for one batch of pages, with retries for pages left uncovered or thin."""
     try:
-        points = _points(
-            llm.chat_json(_batch_messages(topic, batch, formulas), max_tokens=4096, trace_name="write-notes"), batch
-        )
+        points = _points(llm.chat_json(_batch_messages(topic, batch), max_tokens=4096, trace_name="write-notes"), batch)
     except llm.LLMError as e:
         log(f"    notes request failed ({e}); retrying page by page")
         points = []
@@ -197,15 +248,13 @@ def _batch_notes(topic: Topic, batch, formulas, stats, log: Log) -> tuple[list[d
         notes = []
         for n, p in enumerate(redo, start=1):
             if p.id in thin:
-                notes.append(f"[P{n}] was covered too briefly: include {', '.join(thin[p.id])}")
+                notes.append(f"[P{n}] was covered too briefly: add points that include {', '.join(thin[p.id])}")
             else:
                 notes.append(f"[P{n}] had no points")
         extra = "These pages were missed before. Write points for every one of them:\n" + "\n".join(notes)
         try:
             more = _points(
-                llm.chat_json(
-                    _batch_messages(topic, redo, formulas, extra), max_tokens=4096, trace_name="rewrite-missed-notes"
-                ),
+                llm.chat_json(_batch_messages(topic, redo, extra), max_tokens=4096, trace_name="rewrite-missed-notes"),
                 redo,
             )
         except llm.LLMError:
@@ -253,13 +302,17 @@ def _merge(topic: Topic, points: list[dict], pages_by_id: dict[int, chunking.Pag
     n = len(points)
     pts = [dict(p, page_ids=list(p["page_ids"])) for p in points]
     dropped: set[int] = set()
+    follow: dict[int, list[int]] = {}  # claimed repeats that are not: shown right after the point named
     for d in reply.get("duplicates") or []:
         try:
             drop, keep = int(d["drop"]), int(d["keep"])
         except (KeyError, TypeError, ValueError):
             continue
-        if 1 <= drop <= n and 1 <= keep <= n and drop != keep and keep not in dropped:
-            # Removed only if the kept point then covers every page of the repeat.
+        if 1 <= drop <= n and 1 <= keep <= n and drop != keep and keep not in dropped and drop not in dropped:
+            if not _repeats(pts[drop - 1]["text"], pts[keep - 1]["text"]):
+                follow.setdefault(keep, []).append(drop)
+                continue
+            # The kept point takes over every page of the repeat.
             pts[keep - 1]["page_ids"] += [i for i in pts[drop - 1]["page_ids"] if i not in pts[keep - 1]["page_ids"]]
             dropped.add(drop)
     sections, used = [], set()
@@ -275,6 +328,10 @@ def _merge(topic: Topic, points: list[dict], pages_by_id: dict[int, chunking.Pag
             if 1 <= k <= n and k not in used and k not in dropped:
                 used.add(k)
                 nums.append(k)
+                for f in follow.get(k, []):
+                    if f not in used and f not in dropped:
+                        used.add(f)
+                        nums.append(f)
         if nums:
             sections.append(
                 {"heading": str(sec.get("heading") or topic.name)[:120], "points": [pts[k - 1] for k in nums]}
@@ -283,6 +340,17 @@ def _merge(topic: Topic, points: list[dict], pages_by_id: dict[int, chunking.Pag
     if left:
         sections.append({"heading": "Other points", "points": left})
     return sections or fallback
+
+
+def _repeats(drop: str, keep: str) -> bool:
+    """True when the point to drop says nothing the kept point lacks: every number and at
+    least notes.repeat_share of its words are in the kept point."""
+    a, b = index_tokens(drop), set(index_tokens(keep))
+    if not a:
+        return True
+    if any(t.isdigit() and t not in b for t in a):
+        return False
+    return sum(t in b for t in a) / len(a) >= float(_settings().get("repeat_share", 0.8))
 
 
 def _group_by_heading(topic: Topic, points: list[dict], pages_by_id: dict) -> list[dict]:
@@ -302,8 +370,6 @@ def _group_by_heading(topic: Topic, points: list[dict], pages_by_id: dict) -> li
 
 def make(con: sqlite3.Connection, topic: Topic, log: Log = print) -> dict:
     """Notes for one topic (always calls the model; see topic_notes for the cached version)."""
-    cfg = _settings()
-    size = max(1, min(int(cfg.get("batch_pages", 4)), 8))
     formulas = chunking._formulas(con)
     stats = termlib.TermStats(con)
     by_id = {p.id: p for p in topic.pages}
@@ -319,12 +385,12 @@ def make(con: sqlite3.Connection, topic: Topic, log: Log = print) -> dict:
             metadata={"topic_id": topic.id, "pages": len(topic.content)},
         ) as root,
     ):
-        for i in range(0, len(topic.content), size):
-            batch = topic.content[i : i + size]
-            pts, unc, th = _batch_notes(topic, batch, formulas, stats, log)
+        for batch in batches(units(topic.content, formulas)):
+            pts, unc, th = _batch_notes(topic, batch, stats, log)
             points += pts
-            uncovered += unc
-            thin.update(th)
+            uncovered += [i for i in unc if i not in uncovered]
+            for i, missing in th.items():
+                thin[i] = thin.get(i, []) + [t for t in missing if t not in thin.get(i, [])]
         sections = _merge(topic, points, by_id) if points else []
         n_content = len(topic.content)
         share = (n_content - len(set(uncovered))) / n_content if n_content else 1.0

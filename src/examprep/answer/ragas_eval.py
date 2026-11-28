@@ -9,6 +9,11 @@ evaluation questions:
 RAGAS calls its judge model itself (through an OpenAI-compatible client): evaluation.ragas_provider
 in config/answer.yaml when set, else the providers of config/models.yaml in order. A rate limit
 is waited out once; a judge that is refused or still limited is replaced by the next one.
+A judgement that fails for another reason (for example a reply that is not valid JSON) is
+tried once more with the next judge, for that answer only. Judge replies may be up to
+evaluation.ragas_max_tokens tokens: RAGAS's own default (1024) cuts off faithfulness, which
+lists every claim of the answer with a verdict, and reasoning models spend part of the
+budget on thinking.
 RAGAS is in the `eval` extra (installed on Kaggle); without it these
 scores are skipped and the report says so. RAGAS's anonymous usage tracking is turned off.
 """
@@ -60,8 +65,14 @@ def _make_judge(model_id: str, p: dict):
     client = AsyncOpenAI(base_url=p["base_url"], api_key=config.secret(p["api_key_env"]), timeout=timeout)
     # MD_JSON asks for JSON in the reply text instead of the response_format parameter, which
     # not every free provider and model accepts.
+    max_tokens = int(config.answer()["evaluation"].get("ragas_max_tokens", 4096))
     return llm_factory(
-        model_id.split("/", 1)[1], provider="openai", client=client, mode=instructor.Mode.MD_JSON, temperature=0.0
+        model_id.split("/", 1)[1],
+        provider="openai",
+        client=client,
+        mode=instructor.Mode.MD_JSON,
+        temperature=0.0,
+        max_tokens=max_tokens,
     )
 
 
@@ -121,7 +132,16 @@ def score(items: list[dict], log: Log = print) -> dict:
                     await asyncio.sleep(wait)  # per-minute limits clear after a short wait
                     continue
                 if kind == "other":
-                    return None  # a bad reply for this answer: the judge itself is fine
+                    # A bad reply for this answer: the judge itself is fine. Ask the next judge once.
+                    alt = state["at"] + 1
+                    if alt < len(chain):
+                        try:
+                            return _clean((await metrics(alt)[key].ascore(**args)).value)
+                        except Exception as e2:  # noqa: BLE001
+                            errors.append(
+                                f"{chain[alt][0]} {key}: {_kind(e2)}: {e2.__class__.__name__}: {str(e2)[:160]}"
+                            )
+                    return None
                 state["at"] += 1  # refused or still limited: use the next judge from now on
                 waited = False
                 if state["at"] < len(chain):
@@ -154,6 +174,8 @@ def score(items: list[dict], log: Log = print) -> dict:
         return rows, errors
 
     rows, errors = asyncio.run(run())
+    for err in list(dict.fromkeys(errors))[:3]:
+        log(f"  RAGAS error: {err}")
     used = [chain[i][0] for i in sorted(metric_sets)]
     return {"judge": ", ".join(used) or chain[0][0], "rows": rows, "errors": list(dict.fromkeys(errors))[:10]}
 

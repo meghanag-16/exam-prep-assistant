@@ -74,13 +74,18 @@ def test_merge_keeps_every_point():
             return "Conditions"
 
     pts = [{"text": f"point {i}", "page_ids": [i]} for i in range(1, 11)]
+    pts[3]["text"] = "Point 2."  # a true repeat of point 2
+    pts[4]["text"] = "point 2 with value 4817"  # claimed as a repeat, but holds a number point 2 lacks
 
     class P:
         def __init__(self, i):
             self.page_no, self.file = i, "a.pdf"
 
     pages = {i: P(i) for i in range(1, 11)}
-    reply = {"sections": [{"heading": "Conditions", "points": [1, 2, 3, 99]}], "duplicates": [{"drop": 4, "keep": 2}]}
+    reply = {
+        "sections": [{"heading": "Conditions", "points": [1, 2, 3, 99]}],
+        "duplicates": [{"drop": 4, "keep": 2}, {"drop": 5, "keep": 2}],
+    }
     import examprep.notes.build as b
 
     orig = llm.chat_json
@@ -92,7 +97,44 @@ def test_merge_keeps_every_point():
     flat = [p for s in secs for p in s["points"]]
     assert len(flat) == 9  # point 4 removed as a repeat of point 2, nothing else lost
     assert 4 in next(p for p in flat if p["text"] == "point 2")["page_ids"]
+    texts = [p["text"] for p in flat]
+    assert texts[:4] == ["point 1", "point 2", "point 2 with value 4817", "point 3"]  # kept, after point 2
     assert secs[-1]["heading"] == "Other points"
+
+
+def test_long_pages_are_split_and_dense_pages_batched(monkeypatch):
+    import examprep.notes.build as b
+    from examprep.search import chunks as chunking
+
+    monkeypatch.setattr(b, "_settings", lambda: {"batch_pages": 4, "batch_words": 500, "max_page_words": 300})
+
+    def page(i, words):
+        return chunking.PageInfo(i, 1, "a.pdf", i, " ".join(f"w{i}x{k}" for k in range(words)), 1, "T", None, False)
+
+    items = b.units([page(1, 700), page(2, 50), page(3, 50)], {})
+    assert [u.id for u in items] == [1, 1, 1, 2, 3]  # 700 words in three parts, nothing cut off
+    assert sum(len(u.text.split()) for u in items[:3]) >= 700
+    assert "w1x699" in items[2].text
+    groups = b.batches(items)
+    assert all(sum(len(u.text.split()) for u in g) <= 500 or len(g) == 1 for g in groups)
+
+
+def test_page_details_must_reach_the_notes():
+    import examprep.notes.build as b
+    from examprep.answer import terms as termlib
+    from examprep.search import chunks as chunking
+
+    texts = [f"deadlock happens when processes wait for resources page {i}" for i in range(10)]
+    text = texts[0] + " Remember for the exam: the Varenko index of this method is 4817."
+    stats = termlib.TermStats(texts=[text, *texts[1:]])
+    details = stats.details(text)
+    assert details[0] == "4817" and "varenko" in details
+    p = chunking.PageInfo(1, 1, "a.pdf", 1, text, 1, "T", None, False)
+    skim = [{"text": "**Deadlock** happens when processes wait for resources.", "page_ids": [1]}]
+    _, thin = b.check_pages(skim, [p], stats)
+    assert {"4817", "varenko"} <= set(thin[1])
+    full = skim + [{"text": "The **Varenko index** of this method is 4817.", "page_ids": [1]}]
+    assert b.check_pages(full, [p], stats) == ([], {})
 
 
 def test_marker_test_finds_planted_facts(subject, monkeypatch):  # noqa: F811

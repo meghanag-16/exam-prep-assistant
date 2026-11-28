@@ -38,10 +38,15 @@ trusted:
   cache_days: 30
 
 notes:
-  batch_pages: 4          # pages per notes request (3 to 5 keeps each page in focus)
+  batch_pages: 4          # most pages per notes request (3 to 5 keeps each page in focus)
+  batch_words: 1500       # most words per notes request, so dense pages go a few at a time
+  max_page_words: 900     # a longer page is sent in parts (nothing is cut off)
   max_retries: 2          # extra requests for pages left uncovered or too thin
   page_terms: 5           # key terms checked per page
   min_term_share: 0.4     # share of a page's key terms its notes must contain
+  page_details: 8         # specific details checked per page (numbers, rare names and terms)
+  min_detail_share: 0.5   # share of those rare names and terms its notes must contain (numbers: all)
+  repeat_share: 0.8       # a point is dropped as a repeat only if this share of its words is in the kept one
   marker_facts: 20        # facts planted by the coverage marker test
 
 revision:
@@ -52,6 +57,8 @@ evaluation:
   max_questions: 20       # in-material questions answered
   max_outside_questions: 5  # outside questions answered (each searches trusted sites and reads pages)
   deeper_questions: 2     # questions also answered with extra explanations (uses search credits)
+  fresh_llm_calls: true   # answer without the LLM reply cache, so latency and tokens are real (uses quota)
   ragas_questions: 10     # answers scored with RAGAS (about 6 judge calls each); 0 turns it off
   ragas_provider:         # judge provider from models.yaml tried first; empty = models.yaml order
   ragas_rate_limit_wait: 30  # seconds to wait once when the judge is rate-limited, before trying the next judge
+  ragas_max_tokens: 4096  # longest judge reply; RAGAS default 1024 cuts off faithfulness

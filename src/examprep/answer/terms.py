@@ -44,6 +44,20 @@ class TermStats:
         ranked = sorted(counts, key=lambda t: (-(1 + math.log(counts[t])) * self.idf(t), t))
         return ranked[:top_n]
 
+    def details(self, text: str, top_n: int = 8) -> list[str]:
+        """Specific details of text that notes must keep: numbers of two or more digits and
+        words found on at most two of the subject's pages (names, rare terms). The rarest come
+        first (numbers before words when equally rare), so a page full of common numbers (a
+        timing table) still has its unusual values checked."""
+        seen: dict[str, int] = {}
+        for t in index.tokens(text):
+            numeric = t.isdigit() and len(t) >= 2
+            rare = t.isalpha() and len(t) > 3 and self.df.get(t, 0) <= 2
+            if (numeric or rare) and t not in seen:
+                seen[t] = len(seen)
+        ranked = sorted(seen, key=lambda t: (self.df.get(t, 0), not t.isdigit(), seen[t]))
+        return ranked[:top_n]
+
 
 def present(terms: list[str], text: str) -> list[str]:
     """The terms that appear in text (compared as tokens, so "Deadlocks" matches "deadlock")."""

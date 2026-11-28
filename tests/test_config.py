@@ -66,6 +66,11 @@ def test_llm_replies_are_cached(tmp_path, monkeypatch):
     assert len(calls) == 1  # the second answer came from the cache
     llm.chat_json([{"role": "user", "content": "another question"}])
     assert len(calls) == 2
+    with llm.fresh():  # the answer evaluation measures real calls
+        assert llm.chat_json(msg) == {"ok": 1}
+    assert len(calls) == 3
+    llm.chat_json(msg)
+    assert len(calls) == 3  # cached again outside the block
 
 
 def test_requests_are_spaced_per_model(monkeypatch):

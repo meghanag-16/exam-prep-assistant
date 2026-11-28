@@ -344,6 +344,7 @@ def test_answer_evaluation_report(built, monkeypatch):
     assert rep["correct_refusals"] == 1.0
     saved = json.loads((d / "answer_report.json").read_text(encoding="utf-8"))
     assert saved["questions"] == 1 and (d / "answer_report.md").exists()
+    assert saved["fresh_llm_calls"] is True and "used" in saved["outside"][0]
     # A repeat run with the same inputs can be skipped; other counts or edited questions cannot.
     assert answer_eval.is_current(built, deeper=0)
     assert not answer_eval.is_current(built, deeper=1)
@@ -544,3 +545,31 @@ def test_ragas_waits_once_then_switches_judge(monkeypatch):
     # groq/a: rate limited twice (waited once), groq/b: refused, then nvidia/c for everything after.
     assert [j for j, _ in calls[:3]] == ["groq/a", "groq/a", "groq/b"] and calls[3][0] == "nvidia/c"
     assert res["judge"] == "groq/a, groq/b, nvidia/c" and any("rate" in e for e in res["errors"])
+
+
+def test_ragas_bad_reply_is_retried_with_next_judge(monkeypatch):
+    import sys
+    import types
+
+    from examprep.answer import ragas_eval
+
+    class Metric:
+        def __init__(self, llm):
+            self.judge = llm
+
+        async def ascore(self, **kw):
+            if self.judge == "groq/a" and "response" in kw and "user_input" in kw:  # faithfulness only
+                raise ValueError("reply was cut off: not valid JSON")
+            return types.SimpleNamespace(value=0.9)
+
+    fake = types.ModuleType("ragas.metrics.collections")
+    fake.Faithfulness = fake.ResponseGroundedness = fake.ContextRelevance = Metric
+    monkeypatch.setitem(sys.modules, "ragas", types.ModuleType("ragas"))
+    monkeypatch.setitem(sys.modules, "ragas.metrics", types.ModuleType("ragas.metrics"))
+    monkeypatch.setitem(sys.modules, "ragas.metrics.collections", fake)
+    monkeypatch.setattr(ragas_eval, "_judges", lambda: [("groq/a", {}), ("nvidia/c", {})])
+    monkeypatch.setattr(ragas_eval, "_make_judge", lambda model_id, p: model_id)
+    logs: list[str] = []
+    res = ragas_eval.score([{"question": "q", "answer": "a", "contexts": ["c"]}], log=logs.append)
+    assert res["rows"] == [{"faithfulness": 0.9, "response_groundedness": 0.9, "context_relevance": 0.9}]
+    assert any("not valid JSON" in line for line in logs)  # the reason is shown in the log

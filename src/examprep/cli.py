@@ -389,8 +389,9 @@ def evalset_main(argv: list[str] | None = None) -> None:
 
     parser = argparse.ArgumentParser(
         prog="examprep-evalset",
-        description="Draft the evaluation questions (known source page, plus questions outside the material) "
-        "into data/<subject>/eval/questions.yaml for you to check and edit.",
+        description="Manage the hand-picked evaluation questions in data/<subject>/eval/questions.yaml (known "
+        "source page, plus questions outside the material): upload, download, or write a starting draft "
+        "when the file does not exist yet.",
     )
     parser.add_argument("--subject", help="optional when only one subject exists")
     parser.add_argument("--count", type=int, help="questions with a source page (default 50)")
